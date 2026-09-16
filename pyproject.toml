@@ -1,0 +1,93 @@
+[project]
+name = "gammonview-helper"
+# Versioned on this repository's own tags, and deliberately *not* on the
+# codec's. The helper began life inside the analysis monorepo sharing its tags;
+# that coupling was wrong in both directions -- a bgsage patch renumbered a
+# helper nobody had changed, and a relay change had no number of its own to
+# move. What this package is a client of is the relay contract, not
+# `gammonview`'s API, so the two version lines are independent and the contract
+# is promised in code instead (`RELAY_CONTRACT` in `gvhelper/client.py`).
+dynamic = ["version"]
+description = "Analyze GammonView matches on your own computer."
+readme = "README.md"
+# The floor is `gammonview`'s, which is bgsage's. Nothing here needs more.
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicholas Vlamis" }]
+keywords = ["backgammon", "gammonview", "analysis", "bgsage"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Games/Entertainment :: Board Games",
+]
+
+# This is the distribution that exists *because* the codec must stay thin. The
+# engine extra comes in because analysing is the whole job; `httpx` because the
+# relay is an HTTP protocol with a long poll in it; `keyring` because a worker
+# token is a credential and belongs in the platform's credential store rather
+# than in a file next to the config.
+#
+# Deliberately absent: anything for watching folders or drawing a tray icon.
+# Those are v2 (`docs/DesktopHelper.md`, "v1 analyses. It does not watch
+# folders"), and a dependency added early is one shipped to every user for a
+# feature none of them has yet.
+dependencies = [
+    "gammonview[engine]>=1.0.0",
+    "httpx>=0.27",
+    "keyring>=25.0",
+]
+
+[project.urls]
+Homepage = "https://gammonview.com"
+Repository = "https://github.com/ngvlamis/gammonview-helper"
+Issues = "https://github.com/ngvlamis/gammonview-helper/issues"
+
+[project.scripts]
+gammonview-helper = "gvhelper.cli:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Derived from git tags: pushing v0.2.0 publishes 0.2.0, so the tag *is* the
+# version and there is no second place for it to disagree. `publish.yml`
+# refuses to upload anything carrying a `dev` or `+local` segment, which is
+# what hatch-vcs stamps when it cannot find a tag -- the failure mode worth
+# guarding, because it is silent rather than loud.
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gvhelper"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "respx>=0.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    # The one test that runs a real analysis. Registered so the rest of the
+    # suite can be run without the engine (`-m "not slow"`), which is what a
+    # contributor touching the CLI wants and what keeps CI's codec-only job
+    # meaningful.
+    "slow: runs the bgsage engine on a real match",
+    # Needs a reachable GammonView site. Never runs in CI: the server half of
+    # the relay is in a private repository, so there is nothing for a public
+    # workflow to stand up, and pointing CI at the live beta would make every
+    # push a request to a running service. Run it by hand after a relay change
+    # -- that is the moment it exists for. See `docs/Relay.md`.
+    "contract: talks to a live relay (opt-in, needs GAMMONVIEW_CONTRACT_BASE)",
+]

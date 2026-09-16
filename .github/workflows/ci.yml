@@ -1,0 +1,99 @@
+# The helper's suite, on every push and pull request.
+#
+# This package runs on other people's computers, which is what the matrix is
+# shaped around: the platforms, not the Python versions. What breaks here is a
+# credential store that is not a Keychain and an `os.nice` that does not exist
+# on Windows -- neither of which a second interpreter on Linux would ever find.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run's verdict worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One red row must not hide the others: the usual reason to read this
+      # matrix is to find out *which* platform broke.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+        include:
+          # The floor and the ceiling of the supported range, on the cheap
+          # runner. `keyring` and `httpx` are where a version difference would
+          # actually show up; the middle versions are not worth three minutes.
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Two markers deselected, for different reasons.
+      #
+      # `slow` runs a real analysis: it needs a minute of CPU and proves the
+      # engine works, which is bgsage's suite's job rather than this one's.
+      #
+      # `contract` talks to a live relay. The server half of that protocol is
+      # in a private repository, so there is nothing a public workflow could
+      # stand up, and pointing this at beta would make every push a request to
+      # a running service. `docs/Relay.md` says when to run it by hand.
+      - name: helper suite
+        run: uv run --python ${{ matrix.python }} pytest -q -m "not slow and not contract"
+
+  build:
+    name: build (sdist + wheel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the version from git tags, and a shallow clone has
+          # none. It does not fail -- it quietly stamps 0.1.dev1+g<sha> on the
+          # artifacts, which is the kind of thing you discover on PyPI.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv build
+
+      - name: report the derived version
+        run: ls -l dist/
+
+      # The wheel's real test is that the console script it installs actually
+      # runs. It is the first thing a user types after `uv tool install`, and an
+      # entry point naming a module that moved fails right there -- with a
+      # traceback, on their machine, before they have any reason to trust this.
+      #
+      # `--version` rather than `status`: it exits 0 with no credentials (status
+      # exits 1, correctly, because an unlinked helper is not a working one) and
+      # it reads the version back out of the *installed metadata*, so it fails
+      # if hatch-vcs stamped nothing. Resolving the dependencies at all is the
+      # other half of the check -- this is the only place `gammonview[engine]`
+      # is installed from PyPI the way a user gets it.
+      #
+      # From outside the checkout on purpose: with the repo as cwd, `gvhelper`
+      # is importable from the source tree and the wheel is never involved.
+      - name: the wheel's entry point runs
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv run --isolated --no-project --with "$GITHUB_WORKSPACE"/dist/*.whl \
+            gammonview-helper --version
