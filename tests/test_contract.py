@@ -84,6 +84,21 @@ def test_pairing_start_returns_two_distinct_secrets_and_a_word(client, relay):
 
 
 @requires_relay
+def test_an_over_long_wait_is_clamped_rather_than_refused(client, relay):
+    """Revision 2's compatibility promise, checked against the deployment.
+
+    Unauthenticated, so this never reaches the poll itself -- a 422 comes from
+    the query validator *before* the dependency runs, so 401 here is proof the
+    request got past validation. That is the whole assertion: a helper asking
+    for the old 30-second maximum must not be answered with a 422 because the
+    server lowered its cap.
+    """
+    r = client.get(f"{relay}/worker/next-job", params={"wait": 30})
+    assert r.status_code != 422, "the wait bound is validated, not clamped"
+    assert r.status_code in (401, 403)
+
+
+@requires_relay
 def test_the_worker_routes_exist_and_refuse_an_anonymous_caller(client, relay):
     """Every worker route, asked without a token.
 

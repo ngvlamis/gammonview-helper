@@ -23,6 +23,7 @@ mint a credential and use one.
 from __future__ import annotations
 
 import base64
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -47,7 +48,7 @@ from .config import Config
 #:
 #: Bump it when a route, a field or a status code changes meaning -- not when
 #: this package is released, which is what the version above is for.
-RELAY_CONTRACT = "1"
+RELAY_CONTRACT = "2"
 
 #: What this client sends as its `User-Agent`: the package version and the
 #: contract it speaks. The relay's `version` field is deliberately *not* this
@@ -67,11 +68,39 @@ REQUEST_TIMEOUT = 30.0
 #: network failure; too high and a genuinely dead connection sits undetected.
 POLL_TIMEOUT = 45.0
 
-#: What the helper asks the relay to hold a poll open for. The server clamps to
-#: its own maximum, so asking for more is harmless -- but asking for *exactly*
-#: the server's maximum means a slow round trip lands after the client gave up,
-#: so this is deliberately a little under `POLL_TIMEOUT`.
-POLL_WAIT = 30
+#: What the helper asks the relay to hold a poll open for.
+#:
+#: **20, and every second below the server's cap is deliberate.** A long poll
+#: crosses proxies nobody here controls -- the site's own nginx, and then
+#: whatever sits between it and a user's living room. The commonest read
+#: timeout in that chain is 30 seconds, and a poll held for 30 seconds against
+#: a 30-second timeout is a coin flip: win and the helper reads `{"job": null}`,
+#: lose and it reads an HTML 504 from a proxy it has never heard of. That was
+#: observed against beta on 2026-09-16, at roughly every other poll.
+#:
+#: The server clamps this to its own maximum, so asking for *more* is harmless.
+#: Asking for less is the only thing that helps, and it costs a few seconds of
+#: dispatch latency on a job that takes a minute.
+POLL_WAIT = 20
+
+#: Statuses on `next-job` that mean "a proxy gave up", not "the relay refused".
+#:
+#: A held poll is the one request here that a timeout is a *normal* outcome of,
+#: and the request carries no state -- nothing was claimed, so nothing is lost
+#: by asking again immediately. Treating these as errors is what turned a
+#: proxy's impatience into a backoff, and a backoff into a helper that was
+#: asleep when the work arrived.
+POLL_GATEWAY_STATUSES = (502, 503, 504, 408, 524)
+
+#: The floor under a gateway-shortened poll.
+#:
+#: Folding those statuses into "no work" has one sharp edge: a proxy whose
+#: upstream is *down* answers instantly, so the poll that was meant to park for
+#: twenty seconds returns in twenty milliseconds and the loop asks again. That
+#: is a busy loop against a service already having a bad morning. Waiting out
+#: the difference costs nothing in the case this is really for -- a genuine
+#: read timeout has already spent its thirty seconds by the time it answers.
+POLL_GATEWAY_FLOOR = 5.0
 
 
 class RelayError(Exception):
@@ -211,11 +240,22 @@ class WorkerClient:
         """Hold a poll open until there is work, or `wait` elapses.
 
         Returns None on an empty wait. The relay answers `{"job": null}` rather
-        than a 204 precisely so this has one shape to parse.
+        than a 204 precisely so this has one shape to parse -- and a proxy
+        timing the poll out is folded into the same answer, because from here
+        the two are the same fact: no work, ask again.
         """
+        started = time.monotonic()
         r = self._client.get(
             f"{self._base}/next-job", params={"wait": wait}, timeout=POLL_TIMEOUT
         )
+        # A gateway that ran out of patience is an empty poll, not a failure.
+        # Deliberately before `_check`, and deliberately not a catch-all: a 401
+        # still has to reach the daemon as `Unauthorized` and stop it.
+        if r.status_code in POLL_GATEWAY_STATUSES:
+            slept = time.monotonic() - started
+            if slept < POLL_GATEWAY_FLOOR:
+                time.sleep(POLL_GATEWAY_FLOOR - slept)
+            return None
         _check(r, "Could not ask for work.")
         job = r.json().get("job")
         if not job:

@@ -46,7 +46,7 @@ rather than offering another go.
 | Method | Path | Notes |
 | --- | --- | --- |
 | POST | `/worker/hello` | name, version, engine, presets |
-| GET | `/worker/next-job?wait=` | long poll, server caps `wait` at **30s** |
+| GET | `/worker/next-job?wait=` | long poll; server clamps `wait` to **25s** |
 | POST | `/worker/jobs/{id}/progress` | also the lease renewal |
 | POST | `/worker/jobs/{id}/result` | raw `application/octet-stream` body |
 | POST | `/worker/jobs/{id}/error` | message truncated to 500 chars |
@@ -60,8 +60,19 @@ Three server timings this client is built around. A job's lease is **300s**
 (`LEASE_SECONDS`) and a progress report renews it, so progress *is* the
 heartbeat and `daemon.py` posts one every 5 seconds whether or not the number
 moved. A worker unheard from for **120s** (`WORKER_FRESH_SECONDS`) stops being
-`live`, which is what the site's menu reads. A claim is first-wins under one
+`live`, which is what the site's menu reads — and **an empty poll counts as
+being alive**, which it did not until revision 2; a helper waiting quietly for
+work is the normal state of a working helper. A claim is first-wins under one
 `UPDATE … WHERE status='queued'`, so two helpers on one account race safely.
+
+**Long polls live under other people's proxies.** The server holds `next-job`
+for at most 25 seconds and this client asks for 20, both of them under the 30
+that read timeouts commonly default to. A poll held for exactly as long as the
+proxy will wait is a coin flip between an answer and an HTML 504 from
+something the helper has never heard of. So `next_job` also treats 502, 503,
+504, 408 and 524 as *no work* rather than as errors — nothing was claimed, so
+nothing is lost by asking again — with a five-second floor, because a proxy
+whose upstream is down answers instantly and the alternative is a busy loop.
 
 The match arrives base64-encoded inside JSON; the result goes back as a raw
 gzipped `.gvab` body. Not symmetric, and deliberately: the job envelope has
@@ -78,3 +89,15 @@ is written down rather than inferred.
 
 **1** — the protocol as first deployed to beta, 2026-09-16. Pairing with
 word-confirmation, the five worker routes above, `scope='worker'` sessions.
+
+**2** — 2026-09-16, the same day, after the first live pairing found two things
+no local test could. `next-job` now refreshes `last_seen_at`, so an idle helper
+stays `live` instead of vanishing from the site after two minutes while its own
+`status` command still reported a working link. And `wait` is **clamped**
+rather than validated: it used to be `le=MAX_WAIT_SECONDS`, so lowering that
+cap — which revision 2 does, 30 to 25 — would have answered every helper still
+asking for 30 with a 422. A server upgrade must not break clients on machines
+nobody here can update.
+
+A revision-1 client works unchanged against a revision-2 relay. The number is
+for reading logs and for knowing what to check, not a handshake.

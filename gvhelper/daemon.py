@@ -158,7 +158,13 @@ def serve(cfg: Config, token: str, *, once: bool = False) -> int:
                 _log("Run `gammonview-helper link` to link this computer again.")
                 return 2
             except RelayError as e:
-                _log(f"{e} -- retrying in {delay:.0f}s")
+                # The status is part of the message because of what the first
+                # real failure looked like: "Could not ask for work." repeated
+                # every few minutes, with nothing to say whether that was the
+                # relay refusing, the account gone, or -- as it turned out -- a
+                # proxy 504. A number here would have named it immediately.
+                where = f" (HTTP {e.status})" if e.status else ""
+                _log(f"{e}{where} -- retrying in {delay:.0f}s")
             except Exception as e:  # noqa: BLE001 - weather, per the module docstring
                 _log(f"{type(e).__name__}: {e} -- retrying in {delay:.0f}s")
             else:

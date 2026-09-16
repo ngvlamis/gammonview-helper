@@ -13,12 +13,17 @@ point of writing them this way rather than against a mock of our own design.
 from __future__ import annotations
 
 import base64
+import time
 
 import httpx
 import pytest
 import respx
 
+from gvhelper import client as client_module
+
 from gvhelper.client import (
+    POLL_GATEWAY_FLOOR,
+    POLL_WAIT,
     PairingClient,
     RelayError,
     Unauthorized,
@@ -201,4 +206,57 @@ def test_the_poll_asks_the_relay_to_hold_the_request(cfg):
         return_value=httpx.Response(200, json={"job": None})
     )
     WorkerClient(cfg, "tok").next_job()
-    assert route.calls.last.request.url.params["wait"] == "30"
+    assert route.calls.last.request.url.params["wait"] == str(POLL_WAIT)
+
+
+@respx.mock
+def test_the_poll_stays_under_the_commonest_proxy_timeout(cfg):
+    """The number itself is the assertion.
+
+    A poll held for as long as the proxy will wait is a coin flip between an
+    answer and a 504, which is what beta did on 2026-09-16 at roughly every
+    other poll. 30 is the read timeout to beat, and the helper crosses proxies
+    nobody here controls -- so the margin lives on this side rather than in one
+    nginx config.
+    """
+    assert POLL_WAIT < 30
+
+
+@respx.mock
+def test_a_proxy_timeout_is_an_empty_poll_not_a_failure(cfg, monkeypatch):
+    """504 is a gateway's impatience, not the relay's refusal.
+
+    Nothing was claimed, so nothing is lost by asking again -- and treating it
+    as an error is what turned a proxy timeout into a backoff, and a backoff
+    into a helper asleep when the work arrived.
+    """
+    # The floor is shortened here rather than waited out: five statuses times
+    # five seconds is half a minute of CI spent proving nothing this test is
+    # about. `test_an_instant_gateway_error_still_costs_a_wait` is where the
+    # waiting itself is asserted.
+    monkeypatch.setattr(client_module, "POLL_GATEWAY_FLOOR", 0.01)
+    for status in (502, 503, 504, 408, 524):
+        respx.get(f"{RELAY}/worker/next-job").mock(
+            return_value=httpx.Response(status, html="<h1>Gateway Time-out</h1>")
+        )
+        assert WorkerClient(cfg, "tok").next_job() is None, status
+
+
+@respx.mock
+def test_an_instant_gateway_error_still_costs_a_wait(cfg, monkeypatch):
+    """The sharp edge of the rule above.
+
+    A proxy whose upstream is *down* answers in milliseconds, so a poll meant to
+    park for twenty seconds returns at once and the loop asks again -- a busy
+    loop against a service already having a bad morning. A real read timeout has
+    already spent its thirty seconds, so this floor is free in the case it is
+    actually for.
+    """
+    monkeypatch.setattr(client_module, "POLL_GATEWAY_FLOOR", 0.4)
+    respx.get(f"{RELAY}/worker/next-job").mock(return_value=httpx.Response(502))
+    started = time.monotonic()
+    assert WorkerClient(cfg, "tok").next_job() is None
+    assert time.monotonic() - started >= 0.3
+
+    # And the shipped value is a real one, not a token gesture.
+    assert POLL_GATEWAY_FLOOR >= 1.0
