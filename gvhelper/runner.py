@@ -168,10 +168,19 @@ def available_presets() -> list[str]:
     waiting in a queue behind them. Read from `gvanalysis` rather than hardcoded
     so that a preset added to the engine package appears in the site's menu on
     the next `hello`, with nothing here to update.
+
+    In the engine's own key order, which is roughly ascending cost, rather than
+    sorted. `sorted()` threw away information for no gain: it made the site's
+    menu read *Deep, Fast, Quick, World Class, World Class Fast*, whose first
+    button is the third-cheapest thing on it. The site orders what it receives
+    anyway -- it has to, because a helper installed before this change goes on
+    reporting the old order for as long as its owner leaves it alone -- so this
+    is about `status` and the relay row reading sensibly, not about the menu
+    being correct.
     """
     try:
         from gvanalysis.presets import PRESETS
 
-        return sorted(PRESETS)
+        return list(PRESETS)
     except Exception:  # pragma: no cover - installed without [engine]
         return []
