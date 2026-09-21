@@ -15,10 +15,19 @@ it at the price of nesting one process pool inside another, since `gvanalysis`
 already parallelises *within* a job.
 
 So the analysis runs on a thread here, and the isolation people usually want a
-subprocess for is already present one level down: with `jobs > 1` the engine
-work happens in `gvanalysis`'s own worker processes, and an engine that dies
-takes one of those with it and surfaces as `BrokenProcessPool` -- an exception
-this module catches and reports, rather than a helper that vanishes.
+subprocess for is already present one level down: with `jobs` anything but 1
+the engine work happens in `gvanalysis`'s own worker processes, and an engine
+that dies takes one of those with it and surfaces as `BrokenProcessPool` -- an
+exception this module catches and reports, rather than a helper that vanishes.
+
+**Both parallelism axes default to 0, which means "size it yourself".** The
+library's own default is `jobs=1`, serial, and that is a deliberate safety
+default for callers who may not have guarded `if __name__ == "__main__":` --
+spawning without that guard fails as a bare `BrokenProcessPool` naming nothing
+relevant. A console script owns its entry point, so the caveat does not apply
+here and the default is simply expensive: gvanalysis measured serial at 44% off
+the pace on 24 cores. `config.py` says why the helper no longer picks the
+numbers itself.
 """
 
 from __future__ import annotations
@@ -95,8 +104,8 @@ def analyze(
     preset: str,
     progress: Progress,
     *,
-    jobs: int = 1,
-    threads: int = 2,
+    jobs: int = 0,
+    threads: int = 0,
 ) -> bytes:
     """Analyse OGXM binary and return the gzipped analysed `.gvab`.
 

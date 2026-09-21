@@ -26,7 +26,7 @@ import webbrowser
 
 from . import __version__
 from .client import PairingClient, RelayError, Unauthorized, WorkerClient
-from .config import Config, load, machine_name, platform_name, save
+from .config import AUTO, Config, load, machine_name, platform_name, save
 from .runner import available_presets, engine_version
 from .store import backend_name, clear_token, load_token, save_token
 
@@ -129,6 +129,19 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     return serve(cfg, token, once=args.once)
 
 
+def _parallelism(cfg: Config) -> str:
+    """The `jobs x threads` line, with `0` spelt out.
+
+    Printed for somebody diagnosing "why is this slow", so a bare `0 jobs x 0
+    threads` is the one thing it must not say -- zero reads as *none* and the
+    setting means the opposite.
+    """
+    jobs = "auto" if cfg.jobs == AUTO else str(cfg.jobs)
+    threads = "auto" if cfg.threads == AUTO else str(cfg.threads)
+    sized = " (sized by the engine)" if AUTO in (cfg.jobs, cfg.threads) else ""
+    return f"{jobs} jobs x {threads} threads{sized}"
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     """What is configured, and -- if asked -- whether the link still works.
 
@@ -146,7 +159,7 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     _say(f"  credentials: {backend_name(cfg)}")
     _say(f"  engine     : {engine_version()}")
     _say(f"  presets    : {', '.join(available_presets()) or '(engine not installed)'}")
-    _say(f"  parallelism: {cfg.jobs} jobs x {cfg.threads} threads, nice {cfg.nice}")
+    _say(f"  parallelism: {_parallelism(cfg)}, nice {cfg.nice}")
 
     if not token:
         return 1

@@ -79,12 +79,14 @@ actually got — on a machine with no credential store it falls back to a
 
 | key | default | what it does |
 |---|---|---|
-| `jobs` | half your cores, max 6 | how many matches decisions run in parallel |
-| `threads` | 2 | engine threads inside each of those |
+| `jobs` | `0` — the engine decides | how many of a match's decisions run in parallel |
+| `threads` | `0` — the engine decides | engine threads inside each of those |
 | `nice` | 10 | how hard the helper tries to stay out of your way |
 
-The defaults are deliberately below what your machine could manage. The helper
-is meant to be something you forget is running.
+The parallelism is sized by the engine, from measurements it keeps for the
+purpose; set either to a number if you want a hard cap, and it will be kept.
+`nice` is what makes the helper something you forget is running — it yields to
+whatever you are actually doing, and every engine worker inherits it.
 
 ## Licence
 

@@ -46,16 +46,29 @@ def test_the_link_url_is_a_hash_route():
     assert cfg.link_url("abc") == "https://example.test/#/link-helper?code=abc"
 
 
-def test_parallelism_leaves_the_machine_usable():
-    """Half the cores, capped. The failure this guards against is not a wrong
-    number -- it is a laptop that becomes unusable while analysing, which is how
-    this feature gets uninstalled."""
+def test_the_engine_sizes_its_own_parallelism():
+    """Neither axis is picked here any more. The helper used to compute half
+    the cores times two threads, which measured badly on a big machine -- one
+    decision draws about seven cores, so threads fill a decision and processes
+    fill a box, and `gvanalysis` is where that measurement lives."""
     cfg = config.Config()
-    assert 1 <= cfg.jobs <= 6
-    assert cfg.jobs <= max(1, (config.os.cpu_count() or 2))
+    assert cfg.jobs == config.AUTO
+    assert cfg.threads == config.AUTO
+
+
+def test_a_nonsense_parallelism_lands_on_auto_not_on_serial():
+    """Zero is meaningful on both axes now, so the floor had to move off 1.
+    A negative must not quietly become the slowest possible setting."""
+    config.config_path().write_text(json.dumps({"jobs": -4, "threads": -1}))
+    cfg = config.load()
+    assert cfg.jobs == config.AUTO
+    assert cfg.threads == config.AUTO
 
 
 def test_the_helper_yields_to_the_user_by_default():
+    """`nice` is now the *only* thing standing between an analysis and an
+    unusable machine -- the old core-starving default is gone -- so this is
+    load-bearing in a way it was not before."""
     assert config.Config().nice > 0
 
 
@@ -75,10 +88,9 @@ def test_the_environment_wins_over_the_file(monkeypatch):
     assert config.load().site == "https://env.test"
 
 
-def test_saving_does_not_freeze_this_machines_core_count():
-    """`jobs` is computed from the hardware, so writing it would outlive the
-    hardware -- a user who upgrades their computer would keep the old box's
-    parallelism forever."""
+def test_saving_does_not_write_the_parallelism_defaults():
+    """Writing `0` would be indistinguishable from somebody choosing it, and
+    would pin this helper to today's sizing after `gvanalysis` re-measures."""
     cfg = config.load()
     cfg.worker_id = "w1"
     config.save(cfg)

@@ -24,7 +24,7 @@ import json
 import os
 import platform
 import socket
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 #: The site the helper talks to, and the base path of the accounts service on
@@ -100,21 +100,10 @@ def platform_name() -> str:
     return system or "Unknown"
 
 
-def _default_jobs() -> int:
-    """Half the machine's cores, at least one, at most six.
-
-    Half rather than all: the user is *using* this computer. The shared worker
-    fills its box because nobody is sitting at it; a helper that does the same
-    turns a 40-second analysis into 40 seconds of unusable laptop, and the
-    second time that happens the helper is gone.
-
-    The cap is because the returns flatten -- decision-level parallelism is
-    bounded by how many decisions are in flight, and past six workers the extra
-    processes cost memory (each holds its own engine and nets) for very little
-    wall clock.
-    """
-    cores = os.cpu_count() or 2
-    return max(1, min(6, cores // 2))
+#: "Let `gvanalysis` size it." Zero is that value on both parallelism axes --
+#: `jobs=0` picks the worker count from the core count, `threads=0` gives each
+#: worker every core -- and it is the default for both. See `Config.jobs`.
+AUTO = 0
 
 
 @dataclass
@@ -133,9 +122,32 @@ class Config:
     #: `status` can say which row in account settings is this computer.
     worker_id: str | None = None
     #: Decision-level parallelism (`gvanalysis`'s `jobs`) and engine threads
-    #: within each worker (`threads`). See `_default_jobs`.
-    jobs: int = field(default_factory=_default_jobs)
-    threads: int = 2
+    #: within each worker (`threads`). Both are `AUTO`, and the sizing is
+    #: upstream's.
+    #:
+    #: **This used to be half the cores capped at six, times two threads, and
+    #: the reasoning under it was wrong in a way that cost real wall clock.**
+    #: It treated the two axes as substitutes and treated starving the analysis
+    #: of cores as how a helper stays out of the way. gvanalysis 1.1.0 measured
+    #: both axes on four machines: `checker_eval` elevates ~15 candidates per
+    #: decision with a hardcoded `n_threads=1` and overlaps them, so **one
+    #: decision draws about seven cores and no more**. Threads fill a decision;
+    #: processes fill a machine. Half a 24-core box at two threads a worker
+    #: therefore asked for ~12 cores' worth of work and left the rest idle.
+    #:
+    #: So the split is `gvanalysis`'s now -- `ceil(cpu / 7)` workers, floor of
+    #: two, each with every core -- which also means it moves when upstream
+    #: re-measures rather than when somebody remembers to edit this file. On 24
+    #: cores that is 4x0 at 234.97s against serial's 338.26s.
+    #:
+    #: Politeness is `nice` below, which is the axis that actually buys it.
+    #: Niceness is inherited across the spawn, so every engine worker yields to
+    #: whatever the user is doing -- and it costs nothing on an idle machine,
+    #: where holding cores back costs the same whether anyone is sitting there
+    #: or not. Someone who wants a hard cap still writes `jobs` into
+    #: `config.json`, and an explicit setting survives a save.
+    jobs: int = AUTO
+    threads: int = AUTO
     #: Scheduling niceness for the analysis process. Positive means "yield to
     #: everything the user is actually doing", which is the entire point; the
     #: macOS launchd template in `server/deploy/` carries the same idea as a
@@ -209,18 +221,23 @@ def load() -> Config:
                 setattr(cfg, name, int(raw))
         except (TypeError, ValueError):
             pass
-    cfg.jobs = max(1, cfg.jobs)
-    cfg.threads = max(1, cfg.threads)
+    # Floored at `AUTO` rather than at 1, because zero is now a meaningful
+    # setting on both axes and a negative one is nonsense that should land on
+    # the default rather than on serial.
+    cfg.jobs = max(AUTO, cfg.jobs)
+    cfg.threads = max(AUTO, cfg.threads)
     return cfg
 
 
 def save(cfg: Config) -> None:
     """Write the config back. Only the fields worth persisting.
 
-    Not `jobs`/`threads`/`nice` unless they were already in the file: writing
-    the computed defaults would freeze this machine's core count into a file
-    that outlives the machine, and a user who upgrades their computer would keep
-    the old box's parallelism forever.
+    Not `jobs`/`threads`/`nice` unless they were already in the file. These are
+    constants rather than computed values now, so the old reason -- freezing
+    one machine's core count into a file that outlives it -- has gone; the
+    remaining one is that writing `0` would be indistinguishable from somebody
+    choosing it, and would pin this helper to today's sizing even after
+    `gvanalysis` re-measures.
     """
     path = config_path()
     try:
