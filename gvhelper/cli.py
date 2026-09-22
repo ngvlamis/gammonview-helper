@@ -109,7 +109,13 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
             _say("This computer is linked.")
             _say(f"Credentials stored in: {backend_name(cfg)}")
             _say()
-            _say("Start analysing with:")
+            # Said this way round because the common case is soon to be a
+            # helper already running as a login item, which picks the new
+            # credential up within `LINK_POLL_INTERVAL` without being told.
+            # Somebody who started it by hand needs the command; somebody who
+            # did not should not be sent to run a second copy.
+            _say("If GammonView Helper is already running, it will start")
+            _say("analysing within a few seconds. If not, start it with:")
             _say("  gammonview-helper run")
             return 0
 
@@ -119,14 +125,45 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
-    from .daemon import serve
+    """Poll for work, waiting rather than exiting when there is no credential.
+
+    **The loop is the point.** `serve` returns 2 for exactly one reason -- the
+    relay would not accept this credential, either because there is none or
+    because it was revoked -- and exiting on that was wrong once the helper
+    became a login item. It turns the supervisor's restart throttle into the
+    delay before a newly paired machine does any work, and `link` registers the
+    worker with the site the moment you confirm it, so the site offers this
+    machine jobs during the whole of that gap. Measured on gammonview.com: 31
+    seconds of a 36-second first analysis.
+
+    Waiting in-process fixes it everywhere at once, where kicking the
+    supervisor would have meant a `launchctl` path, a `systemctl --user` path
+    and a Windows path, each able to rot on its own.
+
+    `--once` keeps the old behaviour and must: it is what the tests and a
+    "does this work" check use, and neither can block for a credential that is
+    never coming.
+    """
+    from .daemon import serve, wait_for_token
 
     token = load_token(cfg)
-    if not token:
+    if not token and args.once:
         _say("This computer is not linked yet.")
         _say("Run `gammonview-helper link` first.")
         return 2
-    return serve(cfg, token, once=args.once)
+
+    while True:
+        if not token:
+            _say("This computer is not linked yet. Waiting for `gammonview-helper link`.")
+            token = wait_for_token(cfg)
+        code = serve(cfg, token, once=args.once)
+        if code != 2 or args.once:
+            return code
+        # The relay rejected this credential. Not fatal and not a reason to
+        # stop: somebody re-pairing is the ordinary fix, and this way the
+        # helper picks it up by itself. `current=` so the revoked token does
+        # not read as an answer.
+        token = wait_for_token(cfg, current=token)
 
 
 def _parallelism(cfg: Config) -> str:

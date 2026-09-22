@@ -141,8 +141,12 @@ def test_nobody_confirming_says_so_rather_than_hanging(capsys, monkeypatch):
     assert "in time" in capsys.readouterr().out
 
 
-def test_running_unlinked_says_what_to_do_first(capsys):
-    assert _run(["run"]) == 2
+def test_running_unlinked_once_says_what_to_do_first(capsys):
+    """`--once` still exits, and must: it is what a "does this work" check and
+    the tests use, and neither can block for a credential that is never
+    coming. Without the flag the helper now waits instead -- see
+    `test_daemon.py`, and `cmd_run` for why exiting was wrong."""
+    assert _run(["run", "--once"]) == 2
     assert "link" in capsys.readouterr().out
 
 

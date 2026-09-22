@@ -32,6 +32,7 @@ from . import USER_AGENT, __version__
 from .client import Job, RelayError, Unauthorized, WorkerClient
 from .config import Config, machine_name
 from .runner import Progress, analyze, available_presets, engine_version, lower_priority
+from .store import load_token
 
 #: How often progress is posted while a job runs.
 #:
@@ -130,6 +131,56 @@ def run_job(client: WorkerClient, job: Job, cfg: Config) -> None:
     client.deliver(job.id, payload)
     done, total = progress.get()
     _log(f"delivered {job.id} ({total or done} decisions, {len(payload)} bytes)")
+
+
+#: How often an unlinked helper looks in the credential store.
+#:
+#: The number exists because pairing and polling are two processes. `link`
+#: registers the worker with the relay *immediately*, so the website starts
+#: offering this machine work at once -- but the daemon only finds the new
+#: credential when it next looks. Anything it waits here is time the site
+#: believes there is a helper and no helper is listening.
+#:
+#: Measured, not guessed: the first job on gammonview.com sat queued for 31
+#: seconds, which was the login item's restart throttle, not the engine. Three
+#: seconds puts that gap under the one-second dispatch latency plus a blink,
+#: and costs a keyring read every three seconds on a machine that is by
+#: definition doing nothing else.
+LINK_POLL_INTERVAL = 3.0
+
+#: How often waiting says so out loud. The wait is unbounded -- a login item
+#: on a machine nobody has paired yet is a correct state that can last for
+#: days -- so this is the difference between a log and a log file.
+LINK_LOG_INTERVAL = 900.0
+
+
+def wait_for_token(cfg: Config, *, current: str | None = None) -> str:
+    """Block until the credential store holds a usable token. Never returns None.
+
+    Two callers, one behaviour. A helper that has never been linked waits with
+    `current=None`; a helper whose token the relay just rejected waits with the
+    dead one, so that re-reading the same revoked credential does not count as
+    success and spin.
+
+    **This is why the daemon no longer exits when it is not linked.** It used
+    to return 2, which under a login item means: launchd restarts it, it exits
+    again, and the restart throttle -- 60 seconds, chosen to keep exactly that
+    loop quiet -- becomes the delay before a freshly paired machine starts
+    working. Waiting in-process instead removes the loop, so there is nothing
+    to throttle, and it does so identically on macOS, Linux and Windows rather
+    than needing `launchctl kickstart`, `systemctl --user restart`, and
+    whatever Windows would have wanted.
+    """
+    said_at = 0.0
+    while True:
+        token = load_token(cfg)
+        if token and token != current:
+            return token
+        now = time.monotonic()
+        if said_at == 0.0 or now - said_at >= LINK_LOG_INTERVAL:
+            _log("not linked yet -- waiting for `gammonview-helper link`")
+            said_at = now
+        time.sleep(LINK_POLL_INTERVAL)
 
 
 def serve(cfg: Config, token: str, *, once: bool = False) -> int:

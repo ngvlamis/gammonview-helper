@@ -194,3 +194,35 @@ def test_the_progress_pair_is_read_atomically():
     p = daemon.Progress()
     p.set(3, 9)
     assert p.get() == (3, 9)
+
+
+# --- waiting to be linked ---
+
+def test_an_unlinked_helper_waits_instead_of_exiting(cfg, monkeypatch):
+    """It used to return 2. Under a login item that means the supervisor
+    restarts it, it exits again, and the restart throttle -- 60s, chosen to
+    keep exactly that loop quiet -- becomes the delay before a freshly paired
+    machine does any work. Measured on gammonview.com the day accounts went
+    live: 31 seconds of a 36-second first analysis, none of it the engine."""
+    tokens = iter([None, None, "tok"])
+    monkeypatch.setattr(daemon, "load_token", lambda cfg: next(tokens))
+    assert daemon.wait_for_token(cfg) == "tok"
+
+
+def test_a_revoked_token_is_not_mistaken_for_a_new_one(cfg, monkeypatch):
+    """The other caller: the relay rejected what we hold. Re-reading the same
+    dead credential out of the keyring must not count as an answer, or the
+    helper spins on it at the poll interval."""
+    tokens = iter(["dead", "dead", "fresh"])
+    monkeypatch.setattr(daemon, "load_token", lambda cfg: next(tokens))
+    assert daemon.wait_for_token(cfg, current="dead") == "fresh"
+
+
+def test_waiting_does_not_write_a_line_per_poll(cfg, monkeypatch, capsys):
+    """A login item on a machine nobody has paired is a correct state that can
+    last for days, so the wait is unbounded and the logging must not be."""
+    tokens = iter([None] * 20 + ["tok"])
+    monkeypatch.setattr(daemon, "load_token", lambda cfg: next(tokens))
+    daemon.wait_for_token(cfg)
+    assert capsys.readouterr().out.count("not linked yet") == 1
+

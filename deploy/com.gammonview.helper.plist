@@ -32,13 +32,16 @@
     measured ~3.5x slower there. That would quietly undo the parallelism the
     helper now asks `gvanalysis` to size for it.
 
-  * `KeepAlive` is unconditional, including after `serve` returns 2 for an
-    unlinked helper. launchd cannot branch on an exit code, and of the two
-    available behaviours this is the right one: a helper whose token was
-    revoked retries once a `ThrottleInterval` and starts working again by
-    itself the moment the machine is re-paired, at the price of a log line a
-    minute in between. The alternative is a dead login item that needs a human
-    who does not know it died.
+  * `KeepAlive` is unconditional, and `ThrottleInterval` now guards only real
+    crashes. It used to guard a loop of our own making: the daemon exited 2
+    when it had no credential, launchd restarted it, it exited again, and 60
+    seconds was how long that stayed quiet. The cost showed up the day
+    accounts went live -- `link` registers the worker with the site the
+    instant you confirm it, so the throttle became the delay before a freshly
+    paired machine did any work, and the first analysis on gammonview.com sat
+    queued 31 of its 36 seconds. The daemon waits in-process for a credential
+    now (`daemon.wait_for_token`), so there is no loop left to damp and no
+    `launchctl kickstart` for a user to know about.
 
   Manage:
     launchctl bootout   gui/$(id -u)/com.gammonview.helper     # stop + forget

@@ -49,6 +49,11 @@ computer, and the deeper presets appear in the menu. If the helper is not
 running, the website falls back to the shared server on its own — you never get
 an error for having closed it.
 
+You can start it before linking. An unlinked helper waits for a credential
+rather than giving up, so the usual order — install, let it start, then link in
+the browser — needs no third step telling it to look again; it picks the link
+up within a few seconds. The same is true if you unlink and re-link later.
+
 ### Keeping it running (macOS)
 
 `run` stops when you close the terminal. To have it start at login and stay up:

@@ -40,6 +40,10 @@ import threading
 from pathlib import Path
 
 
+#: Set once `lower_priority` has actually niced this process. See its docstring.
+_lowered = False
+
+
 def lower_priority(nice: int) -> None:
     """Get out of the way of whatever the user is actually doing.
 
@@ -51,9 +55,17 @@ def lower_priority(nice: int) -> None:
 
     Called once in the helper process; `gvanalysis`'s worker processes inherit
     it, which is why there is no per-worker initializer to keep in step.
+
+    **Idempotent, and it has to be.** POSIX `nice(2)` is an increment, not a
+    level, so a second call at 10 lands the process at 20 -- the floor of the
+    scale, and a real slowdown rather than politeness. `serve()` calls this and
+    `serve()` is now re-entered whenever a credential is replaced, so "once"
+    is enforced here rather than hoped for at the call sites.
     """
-    if nice <= 0:
+    global _lowered
+    if nice <= 0 or _lowered:
         return
+    _lowered = True
     if hasattr(os, "nice"):
         try:
             os.nice(nice)
