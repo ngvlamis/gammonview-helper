@@ -35,11 +35,24 @@ from .runner import Progress, analyze, available_presets, engine_version, lower_
 
 #: How often progress is posted while a job runs.
 #:
-#: Five seconds, and the number is bounded on both sides by something real. It
-#: must be far under the relay's 300s lease or a long decision looks like a
-#: hang; it must be far over a single decision's cost or the helper spends its
-#: bandwidth telling the server about decisions instead of making them.
-PROGRESS_INTERVAL = 5.0
+#: **One second, because that is what the browser polls at.** This number's
+#: only consumer is a progress bar somebody is watching, and `gva/analyze.js`
+#: asks the relay for it every `POLL_INTERVAL_MS` = 1000ms -- so anything
+#: slower than that is a bar moving in visible steps while the browser asks
+#: five times per step for news that has not changed. It was 5s, chosen
+#: against the two bounds below without checking the rate at the other end.
+#:
+#: Those bounds are both still satisfied with room to spare, which is how the
+#: wrong number survived: it must be far under the relay's 300s lease or a
+#: long decision looks like a hang, and far over one decision's cost (tens of
+#: milliseconds) or the helper spends its time reporting instead of analysing.
+#: 1s sits 300x under one and ~30x over the other.
+#:
+#: The cost is one small POST a second for the length of a run, which also
+#: renews the lease -- the shared worker gets this for free by writing counts
+#: to a `Manager` dict on every decision (`gvserver/jobs.py`), an option a
+#: process on somebody else's computer does not have.
+PROGRESS_INTERVAL = 1.0
 
 #: Backoff after a failed poll: start here, double, stop at the ceiling.
 #: The ceiling is a minute because that is roughly how long a person waits
