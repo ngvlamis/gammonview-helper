@@ -63,9 +63,14 @@ or to point the helper at a different site — it boots the old job out first, s
 you never end up with two pollers sharing one worker id.
 
 ```bash
-launchctl bootout gui/$(id -u)/com.gammonview.helper     # stop, and forget
+deploy/install-login-item.sh stop     # stop it, and leave it stopped
 tail -f ~/Library/Logs/GammonView/helper.log
 ```
+
+Installing always leaves the helper running, so a `stop` does not survive the
+next install. After stopping, the website keeps saying **Connected** for up to
+two minutes — a helper stops by going quiet, and the relay waits that long
+before believing a silence.
 
 The eventual installer does this for you; the script exists because the machine
 this is developed on needed it first, and `deploy/com.gammonview.helper.plist`
