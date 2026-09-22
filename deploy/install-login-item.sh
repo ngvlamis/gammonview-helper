@@ -25,11 +25,25 @@
 set -euo pipefail
 
 LABEL="com.gammonview.helper"
-SITE="${GAMMONVIEW_SITE:-https://beta.gammonview.com}"
+AGENTS_DIR="$HOME/Library/LaunchAgents"
+
+# What the installed plist already points at, if there is one. Re-running this
+# after an upgrade must NOT move a helper between sites -- it is the same
+# command you use to pick up a new version, and silently repointing a machine
+# that was analysing for gammonview.com at beta (or the reverse) is a helper
+# that stops working for reasons nobody can see. So an existing target wins
+# over the default, and only an explicit GAMMONVIEW_SITE overrides it.
+INSTALLED_SITE=""
+if [ -f "$AGENTS_DIR/$LABEL.plist" ]; then
+    INSTALLED_SITE="$(sed -n 's|.*<string>\(https\{0,1\}://[^<]*\)</string>.*|\1|p' \
+        "$AGENTS_DIR/$LABEL.plist" | head -1)"
+fi
+
+SITE="${GAMMONVIEW_SITE:-${INSTALLED_SITE:-https://beta.gammonview.com}}"
 HELPER_BIN="${HELPER_BIN:-$HOME/.local/bin/gammonview-helper}"
 ACTION="${1:-install}"
 LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/GammonView}"
-AGENTS="$HOME/Library/LaunchAgents"
+AGENTS="$AGENTS_DIR"
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$LABEL.plist"
 
 if [ "$ACTION" = "stop" ]; then
@@ -71,6 +85,10 @@ sed -e "s|__HELPER_BIN__|$HELPER_BIN|g" \
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENTS/$LABEL.plist"
 
+if [ -n "$INSTALLED_SITE" ] && [ "$INSTALLED_SITE" != "$SITE" ]; then
+    echo "note: moved from $INSTALLED_SITE to $SITE"
+    echo "      this machine must be linked to the new site separately"
+fi
 echo "loaded $LABEL -> $SITE"
 echo "  binary : $HELPER_BIN"
 echo "  log    : $LOG_DIR/helper.log"

@@ -63,9 +63,17 @@ deploy/install-login-item.sh
 ```
 
 That registers a launchd agent pointing at the installed `gammonview-helper`,
-logging to `~/Library/Logs/GammonView/helper.log`. Re-run it after an upgrade
-or to point the helper at a different site — it boots the old job out first, so
-you never end up with two pollers sharing one worker id.
+logging to `~/Library/Logs/GammonView/helper.log`. Re-run it after an upgrade —
+it boots the old job out first, so you never end up with two pollers sharing one
+worker id, and it keeps whatever site the installed agent already pointed at.
+To move a machine between sites, say so explicitly:
+
+```bash
+GAMMONVIEW_SITE=https://gammonview.com deploy/install-login-item.sh
+```
+
+It says when it moves one, because a credential is per site: the machine has to
+be linked to the new one separately.
 
 ```bash
 deploy/install-login-item.sh stop     # stop it, and leave it stopped
