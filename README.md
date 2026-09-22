@@ -49,6 +49,28 @@ computer, and the deeper presets appear in the menu. If the helper is not
 running, the website falls back to the shared server on its own — you never get
 an error for having closed it.
 
+### Keeping it running (macOS)
+
+`run` stops when you close the terminal. To have it start at login and stay up:
+
+```bash
+deploy/install-login-item.sh
+```
+
+That registers a launchd agent pointing at the installed `gammonview-helper`,
+logging to `~/Library/Logs/GammonView/helper.log`. Re-run it after an upgrade
+or to point the helper at a different site — it boots the old job out first, so
+you never end up with two pollers sharing one worker id.
+
+```bash
+launchctl bootout gui/$(id -u)/com.gammonview.helper     # stop, and forget
+tail -f ~/Library/Logs/GammonView/helper.log
+```
+
+The eventual installer does this for you; the script exists because the machine
+this is developed on needed it first, and `deploy/com.gammonview.helper.plist`
+records the four choices in it that are not boilerplate.
+
 ## The other two commands
 
 ```bash

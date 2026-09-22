@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd LaunchAgent: keep the helper polling across logins and reboots.
+
+  A TEMPLATE. `deploy/install-login-item.sh` fills in the three `__PLACEHOLDER__`
+  values and loads it; nothing here hardcodes a username. Install by hand only
+  if you want to read what you are installing first.
+
+  This is the login item the launcher (docs/DesktopHelper.md, step 7) will
+  eventually register for everyone else. It is written out here because the
+  machine that needs it now is the one being developed on, and because a
+  working reference beats writing it twice.
+
+  Four things about it are decisions, not boilerplate:
+
+  * It runs the INSTALLED tool (`~/.local/bin/gammonview-helper`), never
+    `uv run` from a checkout. A login item aimed into a git working tree runs
+    whatever branch happens to be checked out at boot, which is a debugging
+    session nobody wants at 3am.
+
+  * There is NO `Nice` key, and that is the opposite of the analysis worker's
+    plist next door. `runner.lower_priority` calls `os.nice(cfg.nice)`, and
+    POSIX `nice(2)` is an INCREMENT, not a level: launchd niceing the process
+    to 10 and the helper then adding its own 10 lands it at 20, the floor of
+    the scale. The helper nices itself; uvicorn does not. Set `nice` in
+    `config.json` if you want to change it.
+
+  * NO `ProcessType=Background`, for the reason the analysis plist records the
+    measurement for: it forces the job onto E-cores with throttled I/O, which
+    measured ~3.5x slower there. That would quietly undo the parallelism the
+    helper now asks `gvanalysis` to size for it.
+
+  * `KeepAlive` is unconditional, including after `serve` returns 2 for an
+    unlinked helper. launchd cannot branch on an exit code, and of the two
+    available behaviours this is the right one: a helper whose token was
+    revoked retries once a `ThrottleInterval` and starts working again by
+    itself the moment the machine is re-paired, at the price of a log line a
+    minute in between. The alternative is a dead login item that needs a human
+    who does not know it died.
+
+  Manage:
+    launchctl bootout   gui/$(id -u)/com.gammonview.helper     # stop + forget
+    launchctl kickstart -k gui/$(id -u)/com.gammonview.helper  # restart
+    tail -f __LOG_DIR__/helper.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gammonview.helper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HELPER_BIN__</string>
+        <string>run</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Explicit even though `config.py` already defaults to beta: this is
+             the one line that moves at step 6, and it should be somewhere a
+             person can find it rather than inferred from a package default. -->
+        <key>GAMMONVIEW_SITE</key>
+        <string>__SITE__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- 10s is launchd's default and is too eager for a helper that exits
+         because the site said no. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/helper.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/helper.log</string>
+</dict>
+</plist>
