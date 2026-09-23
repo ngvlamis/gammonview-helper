@@ -156,6 +156,25 @@ enum Installer {
     /// than a failure -- which is the point of the JSON being on stdout
     /// independently of the exit code. So the throw is caught and the parsed
     /// line is used either way.
+    ///
+    /// **The field to read is `link`, not `linked`.** They are two different
+    /// questions and only one of them is ours. `linked` is `bool(token)` --
+    /// whether there is a credential in the Keychain -- and a credential is
+    /// exactly what survives every interesting way this breaks: a machine
+    /// unlinked in account settings, an account deleted, a token restored onto
+    /// a different computer by Migration Assistant. All three leave `linked`
+    /// true and the site knowing nothing about the machine. `link` is the
+    /// result of a real request (`status` calls `hello`), so `"working"` is
+    /// the only value that means what the finished screen is about to claim.
+    ///
+    /// Getting this wrong was unrecoverable rather than merely wrong: the
+    /// installer is the only thing a user of it has, and it told them they
+    /// were done every single time they ran it again.
+    ///
+    /// `"unreachable"` therefore counts as not linked and we go on to pair.
+    /// That cannot register the duplicate worker this check exists to prevent
+    /// -- pairing talks to the same relay `hello` just failed to reach, so it
+    /// fails too, with a message that says so and invites a retry.
     private static func isLinked() throws -> Bool {
         var line: String?
         do {
@@ -165,17 +184,28 @@ enum Installer {
                 onOutput: { line = $0 })
         } catch { /* exit 1 means "not linked", and said so on stdout */ }
 
+        return linkedVerdict(line)
+    }
+
+    /// The decision `isLinked` makes, separated from the process that feeds it
+    /// so that it can be exercised without installing anything.
+    static func linkedVerdict(_ line: String?) -> Bool {
         guard let line,
               let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let linked = object["linked"] as? Bool
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             // Treated as not linked rather than as an error: the cost of being
             // wrong is one extra pairing, and the cost of erroring out is an
             // install that cannot finish.
             return false
         }
-        return linked
+        if let link = object["link"] as? String {
+            return link == "working"
+        }
+        // No `link` at all: a helper older than the one that added it, or a
+        // future one that stopped emitting it. Fall back to the weaker field
+        // rather than looping a working install through pairing every run.
+        return object["linked"] as? Bool ?? false
     }
 
     /// Hand the device flow to the package and render what it says.
