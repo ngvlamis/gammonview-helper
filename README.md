@@ -19,22 +19,20 @@ Needs [uv](https://docs.astral.sh/uv/) (or pipx, or a plain `pip install` into
 a virtualenv).
 
 ```bash
-uv tool install https://github.com/ngvlamis/gammonview-helper/releases/download/v0.1.1/gammonview_helper-0.1.1-py3-none-any.whl
+uv tool install gammonview-helper
 ```
 
 That pulls in the analysis engine and its neural networks — about 80 MB, and it
-takes a minute or two the first time.
-
-The URL names a version on purpose. Point it at a different release to install
-that one, and re-run the same line with a newer version to upgrade — there is
-no `uv tool upgrade` for a package installed from a URL, because there is no
-index for it to ask.
+takes a minute or two the first time. Upgrade later with `uv tool upgrade
+gammonview-helper`.
 
 Two other forms, for whoever prefers them:
 
 ```bash
-# once this is on PyPI, the short name and `uv tool upgrade` both work
-uv tool install gammonview-helper
+# the exact wheel from a release, no index involved. Pinned by definition:
+# re-run it with a newer version to upgrade, since `uv tool upgrade` has
+# nothing to ask about a package installed from a URL
+uv tool install https://github.com/ngvlamis/gammonview-helper/releases/download/v0.1.1/gammonview_helper-0.1.1-py3-none-any.whl
 
 # straight from a tag — needs `git`, and builds from source rather than
 # installing the wheel that was tested

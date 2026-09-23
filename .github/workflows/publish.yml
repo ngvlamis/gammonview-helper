@@ -171,6 +171,14 @@ jobs:
       - name: upload
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job never checks the repository out -- it only downloads the
+          # artifact -- so `gh` has no git remote to infer a repository from
+          # and fails with "not a git repository". `GH_REPO` is the answer that
+          # does not involve cloning a repository in order to read its name;
+          # it applies to every `gh` call in the step. The v0.1.1 run failed
+          # exactly here, after the PyPI upload in the parallel job had already
+          # succeeded, which is the independence this job was ordered for.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
