@@ -260,3 +260,63 @@ def test_an_instant_gateway_error_still_costs_a_wait(cfg, monkeypatch):
 
     # And the shipped value is a real one, not a token gesture.
     assert POLL_GATEWAY_FLOOR >= 1.0
+
+
+# --- failures that produce no response at all ---------------------------------
+#
+# `_check` reads status codes, so for a long time it covered only the failures
+# that got far enough to have one. No network, a captive portal, DNS that never
+# answers, a TLS handshake that fails -- all of those raise out of httpx before
+# any response exists, and they went past every `except RelayError` in the
+# program. `serve` absorbed that on its broad `except Exception`; `link` and
+# `status` did not, and `link` is the first request a new user ever causes, on
+# the machine whose network has just been established as the likely problem.
+
+
+@respx.mock
+def test_an_unreachable_site_is_a_sentence_not_a_traceback(cfg):
+    """The one a new user meets: they double-click the installer on the wifi
+    that is not actually connected."""
+    respx.post(f"{RELAY}/pair/start").mock(side_effect=httpx.ConnectError("nope"))
+    with pytest.raises(RelayError) as caught:
+        PairingClient(cfg).start("Studio", "macOS")
+    message = str(caught.value)
+    assert "example.test" in message          # which site, by name
+    assert "online" in message                # and what to do about it
+    assert "ConnectError" not in message
+    # No status: there was no response to have one, and the daemon's log line
+    # appends `(HTTP n)` only when there is.
+    assert caught.value.status is None
+
+
+@respx.mock
+def test_a_site_that_never_answers_says_so_differently(cfg):
+    """Worth separating from unreachable: "check you are online" is wrong
+    advice when the connection succeeded and the server is simply slow."""
+    respx.post(f"{RELAY}/pair/start").mock(side_effect=httpx.ReadTimeout("slow"))
+    with pytest.raises(RelayError) as caught:
+        PairingClient(cfg).start("Studio", "macOS")
+    assert "in time" in str(caught.value)
+
+
+@respx.mock
+def test_the_worker_half_is_covered_too(cfg):
+    """Not only pairing. `status` calls `hello` and has no broad catch of its
+    own, so this is the difference between a diagnosis and a stack trace at the
+    exact moment somebody is trying to diagnose something."""
+    respx.post(f"{RELAY}/worker/hello").mock(side_effect=httpx.ConnectError("nope"))
+    with pytest.raises(RelayError):
+        WorkerClient(cfg, "tok").hello("Studio", "0.0.0", "bgsage test", ["fast"])
+
+
+@respx.mock
+def test_an_http_error_still_carries_the_relay_s_own_words(cfg):
+    """The fix must not have swallowed the case that already worked: where the
+    relay did answer, its sentence is better than any of ours."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(429, json={"detail": "Too many attempts. Wait a minute."})
+    )
+    with pytest.raises(RelayError) as caught:
+        PairingClient(cfg).start("Studio", "macOS")
+    assert str(caught.value) == "Too many attempts. Wait a minute."
+    assert caught.value.status == 429

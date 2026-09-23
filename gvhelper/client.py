@@ -120,6 +120,42 @@ class Unauthorized(RelayError):
     """
 
 
+
+def _unreachable(error: httpx.RequestError) -> str:
+    """A transport failure, phrased for somebody who is not debugging it."""
+    try:
+        host = error.request.url.host
+    except Exception:  # pragma: no cover - httpx raises if the request is unset
+        host = "GammonView"
+    if isinstance(error, httpx.TimeoutException):
+        return f"{host} did not answer in time. It may be busy -- try again in a moment."
+    return f"Could not reach {host}. Check that this computer is online."
+
+
+def _send(client: httpx.Client, method: str, url: str, **kw) -> httpx.Response:
+    """Make a request, or raise `RelayError` -- never an `httpx` exception.
+
+    `_check` only ever saw a response, which quietly left out every failure
+    that produces no response at all: no network, a captive portal, DNS that
+    never answers, a TLS handshake that fails. Those went past every
+    `except RelayError` in the program and came out as a traceback.
+
+    `serve` survived it on the broad `except Exception` its docstring calls
+    weather. `link` and `status` did not -- and `link` makes the very first
+    request a new user ever causes, on a machine whose network has just been
+    established as the thing most likely to be wrong. A stack trace there is,
+    per this package's own module docstring, where they stop.
+
+    So the boundary is here rather than in each caller: `RelayError` already
+    promises "a message fit to show a user", and there is now nothing that
+    reaches a caller without one.
+    """
+    try:
+        return client.request(method, url, **kw)
+    except httpx.RequestError as e:
+        raise RelayError(_unreachable(e)) from e
+
+
 def _message(response: httpx.Response, fallback: str) -> str:
     """The server's own words where there are any.
 
@@ -177,7 +213,7 @@ class PairingClient:
         Unauthenticated, and grants nothing -- all it creates is an offer that
         expires in a minute and that no account has agreed to.
         """
-        r = self._client.post(
+        r = _send(self._client, "POST",
             f"{self.cfg.relay_base}/pair/start",
             json={"machine": machine, "platform": platform},
         )
@@ -192,7 +228,7 @@ class PairingClient:
         deleted the row. Either way the answer is to start again, so it is left
         to the caller to phrase.
         """
-        r = self._client.post(
+        r = _send(self._client, "POST",
             f"{self.cfg.relay_base}/pair/poll",
             params={"wait": wait},
             json={"code": code, "secret": secret},
@@ -229,7 +265,7 @@ class WorkerClient:
         browser that would otherwise only offer the shared worker's three.
         """
         _check(
-            self._client.post(
+            _send(self._client, "POST",
                 f"{self._base}/hello",
                 json={"name": name, "version": version, "engine": engine, "presets": presets},
             ),
@@ -245,7 +281,7 @@ class WorkerClient:
         the two are the same fact: no work, ask again.
         """
         started = time.monotonic()
-        r = self._client.get(
+        r = _send(self._client, "GET",
             f"{self._base}/next-job", params={"wait": wait}, timeout=POLL_TIMEOUT
         )
         # A gateway that ran out of patience is an empty poll, not a failure.
@@ -280,7 +316,7 @@ class WorkerClient:
         in the queue.
         """
         _check(
-            self._client.post(
+            _send(self._client, "POST",
                 f"{self._base}/jobs/{job_id}/progress",
                 json={"decisions_done": done, "decisions_total": total},
             ),
@@ -290,7 +326,7 @@ class WorkerClient:
     def deliver(self, job_id: str, result: bytes) -> None:
         """Hand back the gzipped `.gvab`. A raw body: this way is bytes only."""
         _check(
-            self._client.post(
+            _send(self._client, "POST",
                 f"{self._base}/jobs/{job_id}/result",
                 content=result,
                 headers={"Content-Type": "application/octet-stream"},
@@ -309,7 +345,7 @@ class WorkerClient:
         keep true.
         """
         _check(
-            self._client.post(
+            _send(self._client, "POST",
                 f"{self._base}/jobs/{job_id}/error", json={"error": error[:500]}
             ),
             "Could not report the failure.",
