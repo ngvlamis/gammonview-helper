@@ -10,7 +10,10 @@ wrong, and therefore the one worth testing hardest.
 
 from __future__ import annotations
 
+import os
 import stat
+
+import pytest
 
 from gvhelper import store
 from gvhelper.config import Config
@@ -25,10 +28,24 @@ def test_nothing_stored_reads_as_nothing(cfg):
     assert store.load_token(cfg) is None
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows has no POSIX mode bits; the ACL is what protects the file",
+)
 def test_the_fallback_file_is_not_readable_by_anyone_else(cfg):
     """0600, and created that way rather than chmodded afterwards: between an
     open and a later chmod there is a window in which the file is world-readable
-    and already holds the token."""
+    and already holds the token.
+
+    Skipped rather than adapted on Windows, because there is nothing there to
+    assert: NTFS has no mode bits, `os.stat` synthesises 0o666 from the
+    read-only attribute alone, and this assertion can only ever fail. What
+    guards the file there is the ACL it inherits from `%LOCALAPPDATA%`, which
+    grants the owning user, SYSTEM and Administrators and nobody else -- not
+    something this process sets, and so not something a test of `save_token`
+    would be testing. It is also the less-travelled path on Windows: `keyring`
+    finds Credential Manager there, and the fallback is what runs when it does
+    not."""
     store.save_token(cfg, "tok-1")
     mode = store._fallback_path().stat().st_mode
     assert not mode & stat.S_IRGRP

@@ -82,20 +82,34 @@ def test_progress_is_posted_while_the_job_runs(cfg, monkeypatch):
     )
     respx.post(f"{RELAY}/worker/jobs/j1/result").mock(return_value=httpx.Response(200, json={}))
 
+    # The job ends when the thing being tested has happened, NOT after a fixed
+    # wall-clock delay. It used to be a `threading.Timer(0.15)` started before
+    # `serve`, which raced everything serve does before the analysis thread
+    # exists -- two mocked round trips and a thread start. On a Windows runner
+    # that lost: the timer had already fired by the time `work()` began, the
+    # thread finished inside its first `release.wait`, and the progress loop
+    # saw a dead thread and posted nothing. Zero, on a machine slow enough.
     release = threading.Event()
+    posts = 0
+
+    def on_progress(request):
+        nonlocal posts
+        posts += 1
+        if posts >= 2:
+            release.set()
+        return httpx.Response(200, json={})
+
+    progress.mock(side_effect=on_progress)
 
     def slow_analyze(match_bytes, preset, p, **kw):
         p.set(1, 100)
+        # Bounded, so a regression that posts nothing fails the assertion
+        # instead of hanging the suite.
         release.wait(2.0)
         return b"gz"
 
     monkeypatch.setattr(daemon, "analyze", slow_analyze)
 
-    def stop_soon():
-        # Let the progress loop turn over a few times, then let the job finish.
-        threading.Timer(0.15, release.set).start()
-
-    stop_soon()
     assert daemon.serve(cfg, "tok", once=True) == 0
     assert progress.call_count >= 2
 
