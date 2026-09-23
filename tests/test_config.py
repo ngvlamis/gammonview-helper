@@ -18,12 +18,14 @@ def test_the_config_directory_is_private_to_this_test():
     assert path.name == "gv"
 
 
-def test_defaults_point_at_beta():
-    """Deliberately the opposite of every other default in GammonView.
+def test_defaults_point_at_production():
+    """The default is the site a stranger who typed `uv tool install` is on.
 
-    A helper shipped before the relay exists on production would pair against a
-    404, so beta is the safe default until step 6 of the plan flips it."""
-    assert config.Config().site == "https://beta.gammonview.com"
+    It was beta until accounts went live on gammonview.com, for the window in
+    which pairing against production would have hit a 404. Beta is tailnet-only,
+    so shipping a release still carrying it would hand every new user a
+    connection error -- and a release cannot be unpublished."""
+    assert config.Config().site == "https://gammonview.com"
 
 
 def test_the_relay_hangs_off_the_accounts_service():

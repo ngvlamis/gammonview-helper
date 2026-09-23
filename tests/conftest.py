@@ -4,7 +4,8 @@
 """Fixtures for the helper suite.
 
 Every test gets its own config directory, so nothing here can read or write the
-developer's real helper -- which on this machine is a live pairing against beta.
+developer's real helper -- which on this machine is a live pairing against a
+running site.
 
 `keyring` is disabled by default for the same reason, and a second time over:
 a suite that stored tokens would leave real entries in the developer's login

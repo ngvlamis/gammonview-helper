@@ -28,11 +28,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 #: The site the helper talks to, and the base path of the accounts service on
-#: it. Beta by default is a deliberate inversion of the usual rule: every other
-#: piece of GammonView defaults to production and opts in to beta, but a helper
-#: shipped before the relay exists on production would pair against a 404. Step
-#: 6 of `docs/DesktopHelper.md` is exactly the commit that flips this line.
-DEFAULT_SITE = "https://beta.gammonview.com"
+#: it.
+#:
+#: This line pointed at beta until accounts went live on gammonview.com
+#: (2026-09-21, step 6 of `docs/DesktopHelper.md`), because a helper shipped
+#: before the relay existed on production would have paired against a 404. It
+#: has to be production *before* the first PyPI or GitHub release and not
+#: after: a stranger running `uv tool install` gets this default, beta is
+#: tailnet-only, and the failure it produces is a connection error with nothing
+#: in it to explain itself. A published version number cannot be taken back.
+#:
+#: Beta is now the opt-in it is everywhere else in GammonView --
+#: `GAMMONVIEW_SITE`, or `site` in `config.json`.
+DEFAULT_SITE = "https://gammonview.com"
 
 #: The accounts service is proxied at `/accounts/` on the site origin, which is
 #: also what the browser client's `DEFAULT_API_BASE` says. The relay is a router

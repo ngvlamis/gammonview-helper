@@ -8,9 +8,9 @@
 # itself about which job it holds.
 #
 # Usage:
-#   deploy/install-login-item.sh                       # beta, installed helper
+#   deploy/install-login-item.sh                       # installed helper
 #   deploy/install-login-item.sh stop                  # stop it, leave it out
-#   GAMMONVIEW_SITE=https://gammonview.com deploy/install-login-item.sh
+#   GAMMONVIEW_SITE=https://beta.gammonview.com deploy/install-login-item.sh
 #   HELPER_BIN=/somewhere/else/gammonview-helper deploy/install-login-item.sh
 #
 # `stop` exists so that stopping the helper does not mean remembering
@@ -39,7 +39,7 @@ if [ -f "$AGENTS_DIR/$LABEL.plist" ]; then
         "$AGENTS_DIR/$LABEL.plist" | head -1)"
 fi
 
-SITE="${GAMMONVIEW_SITE:-${INSTALLED_SITE:-https://beta.gammonview.com}}"
+SITE="${GAMMONVIEW_SITE:-${INSTALLED_SITE:-https://gammonview.com}}"
 HELPER_BIN="${HELPER_BIN:-$HOME/.local/bin/gammonview-helper}"
 ACTION="${1:-install}"
 LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/GammonView}"

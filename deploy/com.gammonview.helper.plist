@@ -61,9 +61,12 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- Explicit even though `config.py` already defaults to beta: this is
-             the one line that moves at step 6, and it should be somewhere a
-             person can find it rather than inferred from a package default. -->
+        <!-- Explicit even though `config.py` now defaults to the same site.
+             A login item is the one copy of this setting a person can find
+             without reading Python, and it is what `install-login-item.sh`
+             reads back so that re-running it does not move an installed helper
+             between sites. Point a second machine at beta by installing with
+             GAMMONVIEW_SITE set. -->
         <key>GAMMONVIEW_SITE</key>
         <string>__SITE__</string>
     </dict>

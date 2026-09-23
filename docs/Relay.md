@@ -19,7 +19,7 @@ for a release — the package version is on its own line for exactly that reason
 ## Base
 
 Every path below is relative to `{site}{api_path}/relay`, which by default is
-`https://beta.gammonview.com/accounts/relay`. See `gvhelper/config.py`.
+`https://gammonview.com/accounts/relay`. See `gvhelper/config.py`.
 
 ## Pairing — no credential, and two secrets that must not be confused
 
