@@ -70,6 +70,13 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["gvhelper"]
 
+[tool.hatch.build.targets.sdist]
+# The sdist is the source of the *Python package*; the git tag is the source
+# snapshot of the project. `launcher/` is a macOS GUI app with a 300 KB icon in
+# it and nothing `pip install` will ever build, so it stays out of a file every
+# installation without a matching wheel has to download.
+exclude = ["launcher"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
