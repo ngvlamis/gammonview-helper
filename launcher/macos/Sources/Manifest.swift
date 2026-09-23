@@ -60,6 +60,25 @@ struct Manifest {
     /// everybody has to accept past Gatekeeper again. Here it is three
     /// characters on a web server.
     let python: String?
+    /// Which GammonView the helper belongs to, or `nil` to leave it alone.
+    ///
+    /// Here for the same reason `python` is -- it is policy -- but it earns
+    /// its place by fixing a failure the launcher cannot otherwise see. The
+    /// install root *is* the helper's config directory (`config_dir()` in
+    /// `gvhelper/config.py` says so), so a `config.json` left behind by an
+    /// earlier hand-install is read by the install we are about to make.
+    /// `site` in that file outranks the package's own default, which means an
+    /// installer downloaded from gammonview.com can quietly produce a helper
+    /// linked to somewhere else -- and then report it as linked, correctly,
+    /// because it really is. The machine simply never appears in the account
+    /// the person was looking at.
+    ///
+    /// Passing it through closes that: `status --site` asks whether we are
+    /// linked *to the site this installer is for*, and `link --site` pairs
+    /// against it and persists the answer. The launcher still decides nothing
+    /// -- it carries what the file it just fetched says, exactly as it carries
+    /// `python` to `uv`.
+    let site: String?
     let launcherMin: Int
     let notice: String?
 
@@ -118,6 +137,7 @@ struct Manifest {
         return Manifest(
             version: version,
             python: object["python"] as? String,
+            site: object["site"] as? String,
             launcherMin: launcherMin,
             notice: object["notice"] as? String)
     }

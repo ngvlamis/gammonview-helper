@@ -50,9 +50,9 @@ enum Installer {
             }
 
             emit(.step(title: "Almost there", detail: "Starting GammonView Helper\u{2026}"))
-            try LoginItem.install()
+            try LoginItem.install(site: manifest.site)
 
-            if try isLinked() {
+            if try isLinked(manifest) {
                 // The upgrade path, which is most runs after the first. Pairing
                 // again here would register a second worker against the account
                 // and show the same computer twice in settings.
@@ -63,7 +63,7 @@ enum Installer {
                     """))
                 return
             }
-            try pair(emit: emit)
+            try pair(manifest, emit: emit)
         } catch let error as ManifestError {
             if case .launcherTooOld = error {
                 emit(.failed(
@@ -175,11 +175,25 @@ enum Installer {
     /// That cannot register the duplicate worker this check exists to prevent
     /// -- pairing talks to the same relay `hello` just failed to reach, so it
     /// fails too, with a message that says so and invites a retry.
-    private static func isLinked() throws -> Bool {
+    /// The helper's global options, which come *before* the subcommand.
+    ///
+    /// Only `--site`, and only when the manifest named one. Left off, the
+    /// package answers for itself, which is the behaviour every launcher had
+    /// before the manifest learned the field.
+    ///
+    /// Internal rather than private for the same reason `linkedVerdict` is:
+    /// it is a decision, and a decision that can be checked without installing
+    /// 80 MB is a decision that gets checked.
+    static func globalArguments(_ manifest: Manifest) -> [String] {
+        guard let site = manifest.site, !site.isEmpty else { return [] }
+        return ["--site", site]
+    }
+
+    private static func isLinked(_ manifest: Manifest) throws -> Bool {
         var line: String?
         do {
             try runProcess(
-                Paths.helper, ["status", "--porcelain"],
+                Paths.helper, globalArguments(manifest) + ["status", "--porcelain"],
                 what: "Checking this computer",
                 onOutput: { line = $0 })
         } catch { /* exit 1 means "not linked", and said so on stdout */ }
@@ -214,11 +228,14 @@ enum Installer {
     /// screen before Safari takes the focus: a browser that arrives first is a
     /// browser the user reads first, and the one thing they must do is compare
     /// three words there against the one word here.
-    private static func pair(emit: @escaping (InstallerEvent) -> Void) throws {
+    private static func pair(
+        _ manifest: Manifest, emit: @escaping (InstallerEvent) -> Void
+    ) throws {
         var terminal: InstallerEvent?
         do {
             try runProcess(
-                Paths.helper, ["link", "--porcelain", "--no-browser"],
+                Paths.helper,
+                globalArguments(manifest) + ["link", "--porcelain", "--no-browser"],
                 what: "Linking this computer",
                 onOutput: { line in
                     guard let data = line.data(using: .utf8),
