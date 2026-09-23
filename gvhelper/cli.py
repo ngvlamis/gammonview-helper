@@ -255,34 +255,69 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     The check is a real request, because every interesting way this breaks is
     invisible from here: a token revoked in account settings, a site that moved,
     an account deleted. Local state will look perfect in all three.
+
+    `--porcelain` exists for one question the launcher has to answer on every
+    run after the first: **is this machine already linked?** Pairing again when
+    it is leaves a second worker registered against the account, and the user
+    sees a machine listed twice in settings with no way to tell which is real.
+    Reading `linked     : yes` out of the report below would have made a column
+    of aligned prose into a load-bearing interface.
     """
     token = load_token(cfg)
-    _say(f"gammonview-helper {__version__}")
-    _say(f"  computer   : {machine_name()} ({platform_name()})")
-    _say(f"  site       : {cfg.api_base}")
-    _say(f"  linked     : {'yes' if token else 'no'}")
-    if cfg.worker_id:
-        _say(f"  worker id  : {cfg.worker_id}")
-    _say(f"  credentials: {backend_name(cfg)}")
-    _say(f"  engine     : {engine_version()}")
-    _say(f"  presets    : {', '.join(available_presets()) or '(engine not installed)'}")
-    _say(f"  parallelism: {_parallelism(cfg)}, nice {cfg.nice}")
+    facts = {
+        "event": "status",
+        "version": __version__,
+        "machine": machine_name(),
+        "platform": platform_name(),
+        "site": cfg.api_base,
+        "linked": bool(token),
+        "worker_id": cfg.worker_id,
+        "store": backend_name(cfg),
+        "engine": engine_version(),
+        "presets": available_presets(),
+    }
+
+    if not args.porcelain:
+        _say(f"gammonview-helper {__version__}")
+        _say(f"  computer   : {facts['machine']} ({facts['platform']})")
+        _say(f"  site       : {facts['site']}")
+        _say(f"  linked     : {'yes' if token else 'no'}")
+        if cfg.worker_id:
+            _say(f"  worker id  : {cfg.worker_id}")
+        _say(f"  credentials: {facts['store']}")
+        _say(f"  engine     : {facts['engine']}")
+        _say(f"  presets    : {', '.join(facts['presets']) or '(engine not installed)'}")
+        _say(f"  parallelism: {_parallelism(cfg)}, nice {cfg.nice}")
+
+    def report(link: str | None, human: str | None) -> None:
+        """One line, in whichever of the two languages was asked for."""
+        if args.porcelain:
+            _say(json.dumps({**facts, "link": link}))
+        elif human:
+            _say(f"  link       : {human}")
 
     if not token:
+        # Not an error state to a launcher -- it is the state a fresh install is
+        # in, and the reason the launcher is about to run `link`.
+        report(None, None)
         return 1
+
     client = WorkerClient(cfg, token)
     try:
         # `hello` rather than a dedicated ping: it is idempotent, it is the call
         # the daemon makes at startup anyway, and making it here means `status`
         # also refreshes what the site knows this machine can do.
         client.hello(machine_name(), __version__, engine_version(), available_presets())
-        _say("  link       : working")
+        report("working", "working")
         return 0
     except Unauthorized:
-        _say("  link       : this computer is no longer linked (unlink it here and link again)")
+        report(
+            "revoked",
+            "this computer is no longer linked (unlink it here and link again)",
+        )
         return 1
     except RelayError as e:
-        _say(f"  link       : could not reach the relay ({e})")
+        report("unreachable", f"could not reach the relay ({e})")
         return 1
     finally:
         client.close()
@@ -343,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=cmd_run)
 
     status = sub.add_parser("status", help="show configuration and check the link")
+    status.add_argument(
+        "--porcelain",
+        action="store_true",
+        help="emit one JSON object instead of a report (what the installer reads)",
+    )
     status.set_defaults(func=cmd_status)
 
     unlink = sub.add_parser("unlink", help="forget this computer's credentials")

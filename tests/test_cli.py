@@ -340,6 +340,60 @@ def test_status_with_no_network_diagnoses_instead_of_crashing(capsys):
     assert "site       : https://example.test/accounts" in out
 
 
+@respx.mock
+def test_status_porcelain_answers_the_launcher_s_one_question(capsys):
+    """Is this machine already linked? Pairing again when it is leaves a second
+    worker registered against the account, listed twice in settings with no way
+    to tell which is real."""
+    store.save_token(Config(site="https://example.test"), "tok")
+    respx.post(f"{RELAY}/worker/hello").mock(return_value=httpx.Response(200, json={}))
+    assert _run(["status", "--porcelain"]) == 0
+    events = _events(capsys.readouterr().out)
+    assert len(events) == 1, "one object, so a reader never has to choose"
+    assert events[0]["event"] == "status"
+    assert events[0]["linked"] is True
+    assert events[0]["link"] == "working"
+    assert events[0]["site"] == "https://example.test/accounts"
+
+
+def test_status_porcelain_unlinked_needs_no_network(capsys):
+    """The state a fresh install is in, and the reason the launcher is about to
+    run `link`. It must not be reported by failing to reach anything."""
+    assert _run(["status", "--porcelain"]) == 1
+    event = _events(capsys.readouterr().out)[0]
+    assert event["linked"] is False
+    assert event["link"] is None
+
+
+@respx.mock
+def test_status_porcelain_tells_revoked_from_unreachable(capsys):
+    """Two failures a launcher must not confuse: one means link again, the
+    other means the wifi is off and nothing is wrong with the account."""
+    store.save_token(Config(site="https://example.test"), "tok")
+    respx.post(f"{RELAY}/worker/hello").mock(return_value=httpx.Response(401))
+    assert _run(["status", "--porcelain"]) == 1
+    assert _events(capsys.readouterr().out)[0]["link"] == "revoked"
+
+    respx.post(f"{RELAY}/worker/hello").mock(side_effect=httpx.ConnectError("nope"))
+    assert _run(["status", "--porcelain"]) == 1
+    event = _events(capsys.readouterr().out)[0]
+    assert event["link"] == "unreachable"
+    # Still linked: the credential is fine, the network is not.
+    assert event["linked"] is True
+
+
+@respx.mock
+def test_status_porcelain_says_nothing_else(capsys):
+    """The aligned report and the JSON are alternatives, not a JSON line
+    appended to a report."""
+    store.save_token(Config(site="https://example.test"), "tok")
+    respx.post(f"{RELAY}/worker/hello").mock(return_value=httpx.Response(200, json={}))
+    _run(["status", "--porcelain"])
+    for line in capsys.readouterr().out.splitlines():
+        if line.strip():
+            json.loads(line)
+
+
 def test_unlink_is_honest_about_being_local_only(capsys):
     """The helper holds a worker-scoped token, which by design cannot reach the
     account routes -- so it cannot remove its own row from settings. Saying
