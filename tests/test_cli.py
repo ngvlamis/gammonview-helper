@@ -10,6 +10,8 @@ code they cannot see is worth nothing next to a sentence telling them what to do
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -141,6 +143,153 @@ def test_nobody_confirming_says_so_rather_than_hanging(capsys, monkeypatch):
     assert "in time" in capsys.readouterr().out
 
 
+# --- `link --porcelain`, which is the installer's half of the device flow ------
+#
+# The launcher is a frozen native binary: it ships once, is never upgraded in
+# place, and cannot be fixed after the fact. So what it reads has to be a
+# contract rather than whatever the prose happened to say that month, and these
+# assert the three properties it actually rests on -- machine-readable, exactly
+# one terminal event on every path, and ASCII on the wire.
+
+
+def _events(out):
+    """Every line of porcelain output, parsed. A line that is not JSON is the
+    failure this whole format exists to prevent, so it raises here rather than
+    being filtered out."""
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+@respx.mock
+def test_porcelain_gives_the_installer_the_word_without_prose(capsys):
+    """The word has to reach a native window. Scraping it out of `_banner`'s box
+    would make rewording a sentence a bug in software already installed."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "HERON",
+            "choices": ["HERON", "ANVIL", "MAPLE"], "expires_in": 60,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(200, json={"status": "linked", "token": "wt", "worker_id": "w9"})
+    )
+    assert _run(["link", "--porcelain", "--name", "Studio"]) == 0
+    events = _events(capsys.readouterr().out)
+    assert [e["event"] for e in events] == ["offer", "linked"]
+    offer, linked = events
+    assert offer["word"] == "HERON"
+    assert offer["url"] == "https://example.test/#/link-helper?code=c1"
+    assert offer["machine"] == "Studio"
+    assert offer["expires_in"] == 60
+    assert linked["worker_id"] == "w9"
+    assert store.load_token(Config(site="https://example.test")) == "wt"
+
+
+@respx.mock
+def test_porcelain_says_nothing_a_reader_cannot_parse(capsys):
+    """Not one stray `print`. A progress window that hits a line of prose has no
+    way to tell a status update from a failure."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "HERON", "choices": [], "expires_in": 60,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(200, json={"status": "linked", "token": "t", "worker_id": "w"})
+    )
+    _run(["link", "--porcelain"])
+    for line in capsys.readouterr().out.splitlines():
+        if line.strip():
+            json.loads(line)  # raises, loudly, on anything else
+
+
+@respx.mock
+def test_porcelain_is_ascii_even_when_the_machine_is_not(capsys):
+    """`json.dumps` escapes non-ASCII by default and that default is kept on
+    purpose: a Windows console on a legacy code page turns an unescaped `o with
+    an umlaut` into a `UnicodeEncodeError`, and the installer would see the flow
+    die at the one moment it is holding the user's attention."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "HERON", "choices": [], "expires_in": 60,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(200, json={"status": "linked", "token": "t", "worker_id": "w"})
+    )
+    assert _run(["link", "--porcelain", "--name", "Bj\u00f6rns MacBook"]) == 0
+    out = capsys.readouterr().out
+    out.encode("ascii")  # raises if anything went out raw
+    assert _events(out)[0]["machine"] == "Bj\u00f6rns MacBook"
+
+
+@respx.mock
+def test_porcelain_cannot_start_ends_in_one_event(capsys):
+    respx.post(f"{RELAY}/pair/start").mock(side_effect=httpx.ConnectError("no route"))
+    assert _run(["link", "--porcelain"]) == 1
+    events = _events(capsys.readouterr().out)
+    assert [e["event"] for e in events] == ["failed"]
+    # Nothing to retry: the site is unreachable, and an installer that offers
+    # "try again" here gets pressed four times.
+    assert events[0]["retry"] is False
+    assert events[0]["reason"]
+
+
+@respx.mock
+def test_porcelain_wrong_word_ends_in_one_event(capsys):
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "HERON", "choices": [], "expires_in": 60,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(404, json={"detail": "no such pairing"})
+    )
+    assert _run(["link", "--porcelain"]) == 1
+    events = _events(capsys.readouterr().out)
+    assert [e["event"] for e in events] == ["offer", "failed"]
+    assert events[-1]["retry"] is True
+    assert store.load_token(Config(site="https://example.test")) is None
+
+
+@respx.mock
+def test_porcelain_nobody_confirms_ends_in_one_event(capsys, monkeypatch):
+    """The path where silence would otherwise be the only signal, which is
+    exactly what a reader must never have to interpret."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "W", "choices": [], "expires_in": 0,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    times = iter([0.0, 100.0, 200.0])
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+    assert _run(["link", "--porcelain"]) == 1
+    events = _events(capsys.readouterr().out)
+    assert [e["event"] for e in events] == ["offer", "failed"]
+    assert events[-1]["retry"] is True
+
+
+@respx.mock
+def test_porcelain_leaves_the_browser_to_the_installer(capsys):
+    """The launcher passes `--no-browser` and opens the URL after its own window
+    is showing the word -- a browser that steals focus first is a browser the
+    user reads before they have read the word they are supposed to match."""
+    respx.post(f"{RELAY}/pair/start").mock(
+        return_value=httpx.Response(200, json={
+            "code": "c1", "secret": "s1", "word": "W", "choices": [], "expires_in": 60,
+        })
+    )
+    respx.post(f"{RELAY}/pair/poll").mock(
+        return_value=httpx.Response(200, json={"status": "linked", "token": "t", "worker_id": "w"})
+    )
+    _run(["link", "--porcelain", "--no-browser"])
+    assert cli._opened == []
+    # The URL is still handed over -- in a field, not in a sentence.
+    assert _events(capsys.readouterr().out)[0]["url"].endswith("?code=c1")
+
+
 def test_running_unlinked_once_says_what_to_do_first(capsys):
     """`--once` still exits, and must: it is what a "does this work" check and
     the tests use, and neither can block for a credential that is never
@@ -174,6 +323,21 @@ def test_status_unlinked_needs_no_network(capsys):
     """Asserted by making no respx mock at all: a stray request would raise."""
     assert _run(["status"]) == 1
     assert "linked     : no" in capsys.readouterr().out
+
+
+@respx.mock
+def test_status_with_no_network_diagnoses_instead_of_crashing(capsys):
+    """`status` is what somebody runs *because* something is wrong, so the one
+    state it must not fail in is the one where the network is the problem."""
+    store.save_token(Config(site="https://example.test"), "tok")
+    respx.post(f"{RELAY}/worker/hello").mock(side_effect=httpx.ConnectError("nope"))
+    assert _run(["status"]) == 1
+    out = capsys.readouterr().out
+    assert "could not reach the relay" in out
+    assert "Traceback" not in out
+    # The rest of the report is still there: which site, which store, which
+    # engine -- all of it local, all of it the part worth reading offline.
+    assert "site       : https://example.test/accounts" in out
 
 
 def test_unlink_is_honest_about_being_local_only(capsys):

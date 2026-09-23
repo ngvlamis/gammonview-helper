@@ -20,6 +20,7 @@ they stop.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 import webbrowser
@@ -51,6 +52,84 @@ def _banner(word: str) -> None:
     _say()
 
 
+class _HumanLink:
+    """`link`, narrated for somebody who has been talked into opening a terminal."""
+
+    def offer(self, machine: str, platform: str, word: str, url: str, expires_in: int) -> None:
+        _say(f"Linking this computer ({machine}, {platform}) to GammonView.")
+        _say("Your browser should open. Sign in if you are asked, then choose this word:")
+        _banner(word)
+        _say(f"You have about {expires_in} seconds. The page is at:")
+        _say(f"  {url}")
+        _say()
+
+    def linked(self, store_name: str, worker_id: str | None) -> None:
+        _say("This computer is linked.")
+        _say(f"Credentials stored in: {store_name}")
+        _say()
+        # Said this way round because the common case is soon to be a helper
+        # already running as a login item, which picks the new credential up
+        # within `LINK_POLL_INTERVAL` without being told. Somebody who started
+        # it by hand needs the command; somebody who did not should not be sent
+        # to run a second copy.
+        _say("If GammonView Helper is already running, it will start")
+        _say("analysing within a few seconds. If not, start it with:")
+        _say("  gammonview-helper run")
+
+    def failed(self, reason: str, retry: bool) -> None:
+        _say(reason)
+        if retry:
+            _say("Run `gammonview-helper link` to try again.")
+
+
+class _PorcelainLink:
+    """`link`, narrated for a program: one JSON object per line on stdout.
+
+    What reads this is the launcher -- the native installer of step 7, which
+    has to draw the confirmation word in its own window because the box
+    `_HumanLink` draws is a terminal artefact. It could have scraped the human
+    output for the word instead, and that would make every rewording of a
+    sentence a bug in a **frozen binary already on other people's computers**,
+    which is the one class of bug this project has no way to fix.
+
+    Equally it could have reimplemented the device flow natively, and must not:
+    pairing is versioned (`RELAY_CONTRACT`) and is exactly the kind of thing
+    that changes, so it stays in the package the launcher can be told to
+    upgrade.
+
+    The compatibility rule is the release manifest's rule, and is simpler than
+    a format version: **fields are added, never removed and never repurposed**,
+    and a reader ignores what it does not recognise. A launcher built against
+    today's `offer` keeps working against a helper that learns to send more.
+
+    Two further promises the reader depends on. Exactly one terminal event --
+    `linked` or `failed` -- is emitted on every path, so silence is never an
+    outcome a reader has to interpret. And the output is ASCII: `json.dumps`
+    escapes non-ASCII by default and that default is kept deliberately, because
+    a machine called `Bj\u00f6rns MacBook` must not turn into a
+    `UnicodeEncodeError` on a Windows console still running a legacy code page.
+    """
+
+    def _emit(self, event: str, **fields: object) -> None:
+        _say(json.dumps({"event": event, **fields}))
+
+    def offer(self, machine: str, platform: str, word: str, url: str, expires_in: int) -> None:
+        self._emit(
+            "offer",
+            machine=machine,
+            platform=platform,
+            word=word,
+            url=url,
+            expires_in=expires_in,
+        )
+
+    def linked(self, store_name: str, worker_id: str | None) -> None:
+        self._emit("linked", store=store_name, worker_id=worker_id)
+
+    def failed(self, reason: str, retry: bool) -> None:
+        self._emit("failed", reason=reason, retry=retry)
+
+
 def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
     """The device flow, from this side.
 
@@ -58,7 +137,13 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
     The helper says what machine it is and shows a word; a signed-in person
     elsewhere decides whether that machine may analyse for them. That is what
     lets one unmodified installer work for anybody.
+
+    Every line it produces goes through `out`, which is the whole of the
+    difference `--porcelain` makes -- there is no second code path through the
+    flow itself, so the installer and the terminal cannot disagree about what
+    happened.
     """
+    out = _PorcelainLink() if args.porcelain else _HumanLink()
     pairing = PairingClient(cfg)
     machine = args.name or machine_name()
     platform = platform_name()
@@ -66,18 +151,15 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
     try:
         offer = pairing.start(machine, platform)
     except RelayError as e:
-        _say(f"Could not start linking: {e}")
+        # No retry line: whatever stopped `start` -- no network, a site that is
+        # down, a typo in `--site` -- running the same command again will not
+        # fix, and telling somebody to try again is how they try four times.
+        out.failed(f"Could not start linking: {e}", retry=False)
         return 1
 
     url = cfg.link_url(offer["code"])
     expires_in = int(offer.get("expires_in") or 60)
-
-    _say(f"Linking this computer ({machine}, {platform}) to GammonView.")
-    _say("Your browser should open. Sign in if you are asked, then choose this word:")
-    _banner(offer["word"])
-    _say(f"You have about {expires_in} seconds. The page is at:")
-    _say(f"  {url}")
-    _say()
+    out.offer(machine, platform, offer["word"], url, expires_in)
 
     if not args.no_browser:
         try:
@@ -99,28 +181,16 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
             # The relay deletes the row on a wrong word, so this is the honest
             # end of the unhappy path as well as the expiry. Both mean: start
             # again, and it is one command.
-            _say(f"Linking did not complete: {e}")
-            _say("Run `gammonview-helper link` to try again.")
+            out.failed(f"Linking did not complete: {e}", retry=True)
             return 1
         if answer.get("status") == "linked":
             save_token(cfg, answer["token"])
             cfg.worker_id = answer.get("worker_id")
             save(cfg)
-            _say("This computer is linked.")
-            _say(f"Credentials stored in: {backend_name(cfg)}")
-            _say()
-            # Said this way round because the common case is soon to be a
-            # helper already running as a login item, which picks the new
-            # credential up within `LINK_POLL_INTERVAL` without being told.
-            # Somebody who started it by hand needs the command; somebody who
-            # did not should not be sent to run a second copy.
-            _say("If GammonView Helper is already running, it will start")
-            _say("analysing within a few seconds. If not, start it with:")
-            _say("  gammonview-helper run")
+            out.linked(backend_name(cfg), cfg.worker_id)
             return 0
 
-    _say("Nobody confirmed in time.")
-    _say("Run `gammonview-helper link` to try again.")
+    out.failed("Nobody confirmed in time.", retry=True)
     return 1
 
 
@@ -256,6 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="print the link instead of opening it (for a machine with no browser)",
+    )
+    link.add_argument(
+        "--porcelain",
+        action="store_true",
+        help="emit one JSON object per line instead of sentences (what the installer reads)",
     )
     link.set_defaults(func=cmd_link)
 
