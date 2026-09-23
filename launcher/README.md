@@ -66,7 +66,7 @@ rm -rf ~/Library/"Application Support"/GammonView
 installer itself is disposable: dragging it to the Trash afterwards — the
 normal thing to do with an installer — must not take the working install away.
 
-## Two things that will surprise you
+## Three things that will surprise you
 
 **It looks finished before it is.** ~80 MB of Python, numpy, bgsage and weights
 arrive after the window appears, which the plan flags as the one place this
@@ -80,6 +80,16 @@ a different binary, so macOS asks once — *Always Allow* is the answer. A new
 user has no such item and sees nothing. Changing the manifest's `python` pin
 rebuilds the interpreter and can re-ask, which is one more reason that field
 moves rarely and deliberately.
+
+**A leftover credential is not a link.** `status --porcelain` reports both
+`linked` (is there a token in the Keychain) and `link` (what the relay said
+when asked). Only the second one means anything: unlinking in account settings,
+deleting the account, letting a worker session expire, or restoring a login
+keychain onto a new Mac all leave the first one true. The installer reads
+`link`, so a machine in that state is paired again rather than told it is fine
+-- which makes "run the installer again" the remedy for a link that stopped
+working, and is why it has to be the remedy: a user of this has no terminal to
+be given a command for.
 
 ## Testing it
 
