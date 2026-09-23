@@ -120,3 +120,63 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ---------------------------------------------------------------------------
+  # The same wheel, attached to the GitHub Release.
+  # ---------------------------------------------------------------------------
+  # `uv tool install <url-to-wheel>` is a complete install path that needs no
+  # index at all, which is what makes shipping ahead of PyPI possible. It is
+  # deliberately the *wheel* and not `git+https://…`: a git install makes every
+  # user's machine clone the repo and run the build backend, so it needs `git`
+  # present (a fresh Mac prompts for the Xcode tools) and it needs hatch-vcs to
+  # find a tag in whatever clone uv made -- the exact failure `fetch-depth: 0`
+  # above exists to prevent, reproduced on a stranger's laptop where nothing
+  # checks it. The artifact is pure Python, so one file covers every platform;
+  # `bgsage`'s per-platform wheels still come from PyPI either way.
+  #
+  # It is also the artifact the launcher installs (docs/DesktopHelper.md, step
+  # 7), which "asks the server which version to install rather than taking
+  # whatever is newest" -- a version string and a predictable asset name is all
+  # that takes.
+  #
+  # `needs: build`, NOT `needs: pypi`, and that ordering is the point: a PyPI
+  # upload that fails for reasons of its own must not withhold an install path
+  # that does not depend on it, and deleting the `pypi` job later must leave
+  # this one working unchanged.
+  release:
+    name: attach to the GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # A dispatch run has no tag to attach to. The tag is the release signal
+    # everywhere else in this file; here it is also the destination.
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      # Overrides the read-only default at the top of the file. Scoped to this
+      # job so the test and build jobs stay unable to write to the repository.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # `gh` is preinstalled on the runner. Used in preference to a third-party
+      # release action because this is a supply-chain path: the fewer things
+      # that get to touch the artifact between `uv build` and the user, the
+      # better, and that argument is the same one that put trusted publishing
+      # above an upload token.
+      #
+      # Written to be re-runnable. `workflow_dispatch` exists to retry a tag
+      # that already exists, and by then the Release usually does too.
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --generate-notes
+          fi
