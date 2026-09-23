@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>GammonView Installer</string>
+    <key>CFBundleDisplayName</key>
+    <string>GammonView Installer</string>
+    <key>CFBundleExecutable</key>
+    <string>GammonViewInstaller</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.gammonview.installer</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>__MIN_OS__</string>
+    <!-- No document types, no URL schemes, no services, no background modes.
+         It opens a window, installs one package, and quits. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT licensed. Source: github.com/ngvlamis/gammonview-helper</string>
+    <!-- The helper it installs polls gammonview.com over HTTPS; this app
+         itself only fetches one JSON file. No ATS exception is needed and
+         none is granted. -->
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+</dict>
+</plist>
