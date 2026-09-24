@@ -112,6 +112,14 @@ def test_the_worker_routes_exist_and_refuse_an_anonymous_caller(client, relay):
         ("POST", f"{relay}/worker/jobs/fake/progress"),
         ("POST", f"{relay}/worker/jobs/fake/result"),
         ("POST", f"{relay}/worker/jobs/fake/error"),
+        # The one worker route that is not about a job, and the only one whose
+        # path is the router prefix itself -- which is what makes it worth
+        # listing here: it has no path segment of its own to make it visible in
+        # a route table, so it is the easiest of these to lose to a refactor of
+        # the prefix. Verified against the service: while it exists, other
+        # methods on that path answer 405; remove it and this DELETE answers
+        # 404, which is the assertion below.
+        ("DELETE", f"{relay}/worker"),
     ]
     for method, url in routes:
         r = client.request(method, url)

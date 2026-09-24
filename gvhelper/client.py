@@ -351,5 +351,27 @@ class WorkerClient:
             "Could not report the failure.",
         )
 
+    def retire(self) -> None:
+        """Unlink this machine from the account, on this credential's authority.
+
+        The one worker route that is not about a job. It exists because the
+        rest of an uninstall is local -- a directory, a login item, a key in the
+        credential store -- and none of that can reach the row the user sees in
+        their settings, leaving a computer listed that no longer has the
+        software on it.
+
+        `Unauthorized` is success, not failure, and the caller must not have to
+        remember that -- so it is swallowed here. A 401 means the session is
+        already gone: the user pressed Unlink on the website first, or this ran
+        twice. Either way the machine is unlinked, which is what was asked for.
+        """
+        try:
+            _check(
+                _send(self._client, "DELETE", self._base),
+                "Could not unlink this computer.",
+            )
+        except Unauthorized:
+            pass
+
     def close(self) -> None:
         self._client.close()

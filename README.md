@@ -107,16 +107,37 @@ records the four choices in it that are not boilerplate.
 
 ```bash
 gammonview-helper status     # what is configured, and is the link still alive
-gammonview-helper unlink     # forget this computer's credentials
+gammonview-helper unlink     # unlink this computer from its account
 ```
 
-`unlink` is local. To remove the computer from your account, use **Unlink** in
-your account settings on the website — the helper's credentials deliberately
-cannot reach your account, so they cannot revoke themselves.
+`unlink` does both halves: it tells the site to drop this computer, then
+forgets the credentials here. If it cannot reach the site it still forgets the
+credentials and says so, so use **Unlink** in your account settings to finish.
+`--local-only` skips the site entirely.
+
+The helper still cannot reach your account — a worker credential is refused by
+every route that takes a sign-in. The one exception is the route that unlinks
+*the caller itself*, which names no computer and so cannot name another one.
+
+## Uninstalling
+
+Remove the login item, the directory, and the account row:
+
+```bash
+gammonview-helper unlink                      # the account row, and the credentials
+launchctl bootout gui/$(id -u)/com.gammonview.helper   # macOS login item
+rm ~/Library/LaunchAgents/com.gammonview.helper.plist
+rm -rf ~/Library/"Application Support"/GammonView
+```
+
+Order matters: `unlink` spends the credential that the last line deletes.
+
+Installed with the macOS installer app instead? Open it again and press
+**Uninstall** — it does all four, in that order.
 
 ## Settings
 
-Everything lives in one directory, which is the whole of the uninstall:
+Everything lives in one directory:
 
 | | |
 |---|---|

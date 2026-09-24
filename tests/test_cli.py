@@ -394,17 +394,109 @@ def test_status_porcelain_says_nothing_else(capsys):
             json.loads(line)
 
 
-def test_unlink_is_honest_about_being_local_only(capsys):
-    """The helper holds a worker-scoped token, which by design cannot reach the
-    account routes -- so it cannot remove its own row from settings. Saying
-    otherwise would leave someone believing they had revoked something they had
-    not."""
+@respx.mock
+def test_unlink_removes_the_account_row_and_then_the_credentials(capsys):
+    """Both halves. The row in settings is the half that used to be impossible
+    from here, and leaving it behind is what made an uninstalled computer go on
+    being listed."""
     cfg = Config(site="https://example.test")
     store.save_token(cfg, "tok")
+    route = respx.delete(f"{RELAY}/worker").mock(return_value=httpx.Response(200, json={}))
+
+    assert _run(["unlink"]) == 0
+    assert route.called
+    assert store.load_token(cfg) is None
+    assert "removed from your account settings" in capsys.readouterr().out
+
+
+@respx.mock
+def test_unlink_spends_the_token_before_destroying_it(capsys):
+    """The order is the opposite of the obvious one: the remote half needs the
+    credential the local half erases. Reversed, the row could never be removed
+    from this machine again -- the state the command exists to prevent."""
+    cfg = Config(site="https://example.test")
+    store.save_token(cfg, "tok")
+    seen = {}
+
+    def _capture(request):
+        seen["auth"] = request.headers.get("Authorization")
+        seen["token_at_call_time"] = store.load_token(cfg)
+        return httpx.Response(200, json={})
+
+    respx.delete(f"{RELAY}/worker").mock(side_effect=_capture)
+    assert _run(["unlink"]) == 0
+    assert seen["auth"] == "Bearer tok"
+    assert seen["token_at_call_time"] == "tok", "cleared too early to authenticate"
+
+
+@respx.mock
+def test_unlink_offline_still_unlinks_this_computer(capsys):
+    """Somebody uninstalling on a laptop with no network still wants the
+    credentials gone. What must not happen is claiming the row went too."""
+    cfg = Config(site="https://example.test")
+    store.save_token(cfg, "tok")
+    respx.delete(f"{RELAY}/worker").mock(side_effect=httpx.ConnectError("nope"))
+
     assert _run(["unlink"]) == 0
     assert store.load_token(cfg) is None
     out = capsys.readouterr().out
-    assert "account settings" in out
+    assert "could not be removed" in out
+    assert "Use Unlink there to finish" in out
+
+
+@respx.mock
+def test_unlink_treats_an_already_dead_credential_as_done(capsys):
+    """401 means the session is gone -- unlinked from the website a moment ago,
+    or this run twice. The machine is unlinked, which is what was asked."""
+    cfg = Config(site="https://example.test")
+    store.save_token(cfg, "tok")
+    respx.delete(f"{RELAY}/worker").mock(return_value=httpx.Response(401))
+
+    assert _run(["unlink"]) == 0
+    assert store.load_token(cfg) is None
+    assert "removed from your account settings" in capsys.readouterr().out
+
+
+def test_unlink_local_only_reaches_nothing(capsys):
+    """The old behaviour, kept under a flag. Asserted by making no respx mock
+    at all, so a stray request would raise."""
+    cfg = Config(site="https://example.test")
+    store.save_token(cfg, "tok")
+    assert _run(["unlink", "--local-only"]) == 0
+    assert store.load_token(cfg) is None
+    assert "may still be listed" in capsys.readouterr().out
+
+
+def test_unlink_with_no_credential_reaches_nothing(capsys):
+    """Nothing to spend, so nothing to spend it on. Also no respx mock."""
+    assert _run(["unlink"]) == 0
+    assert "may still be listed" in capsys.readouterr().out
+
+
+@respx.mock
+def test_unlink_porcelain_distinguishes_left_from_skipped(capsys):
+    """Three outcomes, and the two failures are not the same: `skipped` means
+    nobody tried, `left` means it was tried and did not work. An uninstaller
+    shows a different sentence for each."""
+    cfg = Config(site="https://example.test")
+
+    store.save_token(cfg, "tok")
+    respx.delete(f"{RELAY}/worker").mock(return_value=httpx.Response(200, json={}))
+    assert _run(["unlink", "--porcelain"]) == 0
+    assert _events(capsys.readouterr().out)[0] == {
+        "event": "unlinked", "account": "removed", "reason": None,
+    }
+
+    store.save_token(cfg, "tok")
+    respx.delete(f"{RELAY}/worker").mock(side_effect=httpx.ConnectError("nope"))
+    assert _run(["unlink", "--porcelain"]) == 0
+    event = _events(capsys.readouterr().out)[0]
+    assert event["account"] == "left"
+    assert event["reason"]
+
+    store.save_token(cfg, "tok")
+    assert _run(["unlink", "--local-only", "--porcelain"]) == 0
+    assert _events(capsys.readouterr().out)[0]["account"] == "skipped"
 
 
 def test_no_command_prints_help(capsys):

@@ -324,22 +324,66 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_unlink(cfg: Config, args: argparse.Namespace) -> int:
-    """Forget the credentials on this machine.
+    """Unlink this computer: the row in the account, then the credentials here.
 
-    Local only, and the message is careful to say so. The helper holds a worker
-    token, which by design cannot reach the account routes -- so it cannot
-    remove its own row from account settings, and claiming otherwise would leave
-    someone believing they had revoked something they had not. Revocation is the
-    Unlink button on the website; this is the half that can be done from here.
+    This used to be local only, and said so at length -- the helper holds a
+    worker token, a worker token is refused by every route taking
+    `current_user`, so it could not remove its own row and telling someone
+    otherwise would have left them believing they had revoked something they
+    had not. All of that is still true of the account routes. What changed is
+    that the relay grew one worker route that is not about a job:
+    `DELETE /relay/worker`, which names no machine and can therefore only reach
+    the caller's own. See `worker_retire` in `gvaccounts/relay.py` for why that
+    is safe to offer a credential otherwise trusted with nothing.
+
+    **Order matters and is the opposite of the obvious one.** The remote half
+    goes first, because it needs the token that the local half destroys. Doing
+    it the other way round would leave the row unremovable from here forever,
+    which is precisely the state this command exists to stop happening.
+
+    **A failure to reach the site is not a failure to unlink.** Someone
+    uninstalling on a laptop with no network still wants the credentials off
+    the machine, and refusing would leave them with software they asked to have
+    removed. So the local half runs unconditionally and the outcome of the
+    remote half is *reported* rather than raised -- the one thing that must not
+    happen is claiming the row is gone when it is not.
     """
+    token = load_token(cfg)
+
+    # "skipped" is a truthful third answer and not a synonym for "left": one
+    # means nobody tried, the other means it was tried and did not work. The
+    # launcher shows a different sentence for each.
+    account = "skipped"
+    reason = None
+    if token and not args.local_only:
+        client = WorkerClient(cfg, token)
+        try:
+            client.retire()
+            account = "removed"
+        except RelayError as e:
+            account, reason = "left", str(e)
+        finally:
+            client.close()
+
     clear_token(cfg)
     cfg.worker_id = None
     save(cfg)
+
+    if args.porcelain:
+        _say(json.dumps({"event": "unlinked", "account": account, "reason": reason}))
+        return 0
+
     _say("This computer has forgotten its GammonView credentials.")
     _say("It will not receive any more matches.")
     _say()
-    _say("The machine may still be listed in your account settings on the website.")
-    _say("Use Unlink there to remove it.")
+    if account == "removed":
+        _say("It has also been removed from your account settings.")
+    elif account == "left":
+        _say(f"It could not be removed from your account settings ({reason}).")
+        _say("Use Unlink there to finish, when you are next online.")
+    else:
+        _say("The machine may still be listed in your account settings on the website.")
+        _say("Use Unlink there to remove it.")
     return 0
 
 
@@ -385,7 +429,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
-    unlink = sub.add_parser("unlink", help="forget this computer's credentials")
+    unlink = sub.add_parser("unlink", help="unlink this computer from its account")
+    unlink.add_argument(
+        "--local-only",
+        action="store_true",
+        help="forget the credentials here without telling the site (what this used to do)",
+    )
+    unlink.add_argument(
+        "--porcelain",
+        action="store_true",
+        help="emit one JSON object instead of sentences (what the installer reads)",
+    )
     unlink.set_defaults(func=cmd_unlink)
     return parser
 
