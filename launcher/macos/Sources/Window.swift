@@ -26,11 +26,15 @@ final class InstallerWindow: NSWindow {
     private let wordLabel = NSTextField(labelWithString: "")
     private let wordCaption = NSTextField(wrappingLabelWithString: "")
     private let primary = NSButton(title: "", target: nil, action: nil)
+    private let alternate = NSButton(title: "", target: nil, action: nil)
     private let secondary = NSButton(title: "Quit", target: nil, action: nil)
 
     /// What the buttons do right now. Set by `render`, read by the actions.
     private var primaryAction: (() -> Void)?
+    private var alternateAction: (() -> Void)?
     var onRetry: (() -> Void)?
+    var onUpdate: (() -> Void)?
+    var onUninstall: (() -> Void)?
 
     init() {
         super.init(
@@ -88,11 +92,18 @@ final class InstallerWindow: NSWindow {
         primary.action = #selector(primaryPressed)
         primary.isHidden = true
 
+        // Never `keyEquivalent`: the destructive choice must not be what
+        // Return does to a window somebody has not finished reading.
+        alternate.bezelStyle = .rounded
+        alternate.target = self
+        alternate.action = #selector(alternatePressed)
+        alternate.isHidden = true
+
         secondary.bezelStyle = .rounded
         secondary.target = self
         secondary.action = #selector(quitPressed)
 
-        let buttons = NSStackView(views: [NSView(), secondary, primary])
+        let buttons = NSStackView(views: [alternate, NSView(), secondary, primary])
         buttons.orientation = .horizontal
         buttons.spacing = 12
 
@@ -154,10 +165,26 @@ final class InstallerWindow: NSWindow {
             setPrimary("Open the page again") { NSWorkspace.shared.open(url) }
             NSWorkspace.shared.open(url)
 
-        case .finished(let message):
+        case .choice(let message):
             progress.stopAnimation(nil)
             progress.isHidden = true
-            stepTitle.stringValue = "All set"
+            stepTitle.stringValue = "Already installed"
+            detail.stringValue = message
+            // Update is the default because it is the common reason to run
+            // this twice and because it is the one that undoes nothing.
+            setPrimary("Update") { [weak self] in
+                self?.beginWork("Getting ready")
+                self?.onUpdate?()
+            }
+            setAlternate("Uninstall") { [weak self] in
+                self?.beginWork("Removing")
+                self?.onUninstall?()
+            }
+
+        case .finished(let title, let message):
+            progress.stopAnimation(nil)
+            progress.isHidden = true
+            stepTitle.stringValue = title
             detail.stringValue = message
             wordCard.isHidden = true
             wordCaption.isHidden = true
@@ -189,16 +216,34 @@ final class InstallerWindow: NSWindow {
         primaryAction = action
     }
 
-    private func restart() {
+    private func setAlternate(_ title: String, _ action: @escaping () -> Void) {
+        alternate.title = title
+        alternate.isHidden = false
+        alternateAction = action
+    }
+
+    /// Back to the working look: no buttons to press twice, bar moving again.
+    ///
+    /// Hiding the buttons is the part that matters. Every one of them starts
+    /// something that takes minutes, and a second press during those minutes
+    /// would run it concurrently with itself -- two `uv tool install`s into one
+    /// directory, or an uninstall racing the update it was clicked next to.
+    private func beginWork(_ title: String) {
         primary.isHidden = true
+        alternate.isHidden = true
         noticeLabel.isHidden = true
         progress.isHidden = false
         progress.startAnimation(nil)
-        stepTitle.stringValue = "Getting ready"
+        stepTitle.stringValue = title
         detail.stringValue = ""
+    }
+
+    private func restart() {
+        beginWork("Getting ready")
         onRetry?()
     }
 
     @objc private func primaryPressed() { primaryAction?() }
+    @objc private func alternatePressed() { alternateAction?() }
     @objc private func quitPressed() { NSApp.terminate(nil) }
 }

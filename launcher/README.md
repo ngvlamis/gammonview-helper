@@ -42,7 +42,12 @@ Three things, and each of them is fetched rather than compiled in:
 | --- | --- |
 | which helper version to install | `helper-release.json` on gammonview.com |
 | which Python to install it on | the same file's `python` field |
-| which site the helper talks to | the helper package's own default |
+| which site the helper talks to | the same file's `site` field, or the package |
+
+That last row used to read "the helper package's own default", which was right
+in principle and wrong in practice: the package's default comes from
+`config.json` in the install root, and the install root is a directory an
+earlier hand-install may already have written. See `Manifest.site`.
 
 `launcher_min` in that file is the escape hatch, and the only one. A launcher
 whose generation is below it stops and sends the user to the download page,
@@ -62,11 +67,16 @@ rm ~/Library/LaunchAgents/com.gammonview.helper.plist
 rm -rf ~/Library/"Application Support"/GammonView
 ```
 
+Or open the installer again and press **Uninstall**, which is the same list
+plus the half no shell command here can do: `gammonview-helper unlink` first,
+so the computer stops being listed in the user's account settings. That step
+has to come first, because it spends the credential the third line deletes.
+
 `uv` is copied *out* of the app bundle rather than run from it, so the
 installer itself is disposable: dragging it to the Trash afterwards — the
 normal thing to do with an installer — must not take the working install away.
 
-## Three things that will surprise you
+## Four things that will surprise you
 
 **It looks finished before it is.** ~80 MB of Python, numpy, bgsage and weights
 arrive after the window appears, which the plan flags as the one place this
@@ -90,6 +100,21 @@ keychain onto a new Mac all leave the first one true. The installer reads
 -- which makes "run the installer again" the remedy for a link that stopped
 working, and is why it has to be the remedy: a user of this has no terminal to
 be given a command for.
+
+**Running it twice asks a question.** Every other decision this program makes
+it makes for itself, which is what a one-button installer is. But a second
+double-click is genuinely two different intentions -- update the thing, or take
+it off this computer -- and there is no way to infer which. So an install it
+finds already present gets a screen with **Update** and **Uninstall** on it,
+Update being the default because it is the one that undoes nothing. Uninstall
+is never the Return key.
+
+Uninstalling runs `gammonview-helper unlink` *first*, before the login item and
+before the files, and the order is forced rather than tidy: unlinking is the
+only step that needs the credential, and the credential lives in a store that
+only the installed helper knows how to reach. Done last it could not be done at
+all, and the account would go on listing a computer that no longer has the
+software on it -- which is the state that made an uninstall worth building.
 
 ## Testing it
 

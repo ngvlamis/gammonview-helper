@@ -20,23 +20,39 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: InstallerWindow!
 
+    /// Which sequence Try Again would run.
+    ///
+    /// Held rather than recomputed, because by the time something has failed
+    /// the machine no longer answers the question `Installer.start` asks: a
+    /// half-finished install has the helper on disk, so re-deciding would show
+    /// the "already installed" screen to somebody whose install just broke,
+    /// and offer to uninstall it as the fix.
+    private var action: ((@escaping (InstallerEvent) -> Void) -> Void) = Installer.start
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
 
         window = InstallerWindow()
-        window.onRetry = { [weak self] in self?.start() }
+        window.onRetry = { [weak self] in self?.run() }
+        window.onUpdate = { [weak self] in self?.run(Installer.install) }
+        window.onUninstall = { [weak self] in self?.run(Installer.uninstall) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         window.show(.step(title: "Getting ready", detail: "Starting\u{2026}"))
-        start()
+        run()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 
-    private func start() {
+    /// Run a sequence on a background queue, remembering it for Try Again.
+    private func run(
+        _ next: ((@escaping (InstallerEvent) -> Void) -> Void)? = nil
+    ) {
+        if let next { action = next }
+        let sequence = action
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            Installer.run { event in self?.window.show(event) }
+            sequence { event in self?.window.show(event) }
         }
     }
 

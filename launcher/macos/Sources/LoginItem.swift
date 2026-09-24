@@ -110,4 +110,47 @@ enum LoginItem {
             launchctl, ["bootstrap", "gui/\(uid)", plistURL.path],
             what: "Starting GammonView Helper")
     }
+
+    /// Stop the helper and forget it was ever a login item.
+    ///
+    /// `install`'s exact inverse, and deliberately throws nothing: this runs
+    /// during an uninstall, where a step that fails must not stop the steps
+    /// after it. A machine with no login item registered is the *goal*, so
+    /// launchd refusing to boot out something it has never heard of is success
+    /// wearing an error's clothes.
+    static func remove() {
+        if Paths.sandboxed != nil { return }
+        let uid = getuid()
+        _ = try? runProcess(
+            URL(fileURLWithPath: "/bin/launchctl"),
+            ["bootout", "gui/\(uid)/\(label)"],
+            what: "launchctl bootout")
+        try? FileManager.default.removeItem(at: plistURL)
+    }
+
+    /// Which site the installed helper has actually been polling, if it says.
+    ///
+    /// Read back out of the plist this program wrote, which is the only record
+    /// of it that does not depend on the network or on `config.json` -- and
+    /// `config.json` is exactly the file that cannot be trusted here, since the
+    /// whole reason `GAMMONVIEW_SITE` is in the plist at all is that an earlier
+    /// hand-install can leave a stale site in it (see the note on `document`).
+    ///
+    /// `nil` means the key is absent, which is a real and ordinary state: a
+    /// launcher older than the field wrote no key, and a manifest naming no
+    /// site writes none today. The caller then passes no `--site` and the
+    /// package answers for itself, which is what those installs have always
+    /// done.
+    /// `at:` so the parsing can be exercised against a plist in a temporary
+    /// directory; nothing but a test ever passes it.
+    static func installedSite(at url: URL = plistURL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [], format: nil) as? [String: Any],
+              let environment = plist["EnvironmentVariables"] as? [String: Any],
+              let site = environment["GAMMONVIEW_SITE"] as? String,
+              !site.isEmpty
+        else { return nil }
+        return site
+    }
 }
