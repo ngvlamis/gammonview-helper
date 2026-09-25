@@ -369,10 +369,18 @@ enum Installer {
             // install that cannot finish.
             return false
         }
-        if let link = object["link"] as? String {
-            return link == "working"
+        // Key *present* -- including present and null -- is a helper that was
+        // asked and is answering, so its answer stands and only "working" is
+        // one. Testing `as? String` instead would make an explicit null
+        // indistinguishable from an absent key and send it to the fallback
+        // below, which is the weaker field saying yes on the strength of a
+        // credential nobody has checked. The safe answer here is always the
+        // false one: it costs one extra pairing, which the relay makes
+        // idempotent anyway, where a wrong true is the finished screen lying.
+        if object.keys.contains("link") {
+            return (object["link"] as? String) == "working"
         }
-        // No `link` at all: a helper older than the one that added it, or a
+        // No `link` key at all: a helper older than the one that added it, or a
         // future one that stopped emitting it. Fall back to the weaker field
         // rather than looping a working install through pairing every run.
         return object["linked"] as? Bool ?? false

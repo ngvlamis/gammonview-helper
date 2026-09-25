@@ -97,3 +97,21 @@ jobs:
         run: |
           uv run --isolated --no-project --with "$GITHUB_WORKSPACE"/dist/*.whl \
             gammonview-helper --version
+
+  # The launcher's decisions, on every push rather than only at release.
+  #
+  # It is a separate job and not a step in the matrix above because it shares
+  # nothing with the Python suite -- no uv, no interpreter, no dependencies --
+  # and because it is macOS-only, where the matrix is deliberately not.
+  #
+  # Only the checks, never `build.sh`. A full launcher build fetches 70 MB of
+  # `uv` from GitHub releases and lipos two slices, which is a release-time
+  # cost; what actually breaks between releases is a JSON field being read
+  # wrong, and that is what these compile and exercise. `launcher.yml` does the
+  # build, and asserts the things only a build can show.
+  launcher:
+    name: launcher checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: launcher/macos/checks.sh
