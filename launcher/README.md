@@ -16,6 +16,7 @@ GammonView repository, *"The native surface is a launcher, and it is frozen"*.
 ## Building
 
 ```sh
+launcher/macos/checks.sh          # the decisions, in a few seconds
 launcher/macos/build.sh           # -> launcher/macos/build/GammonView Installer.app
 VERSION=1.0.1 launcher/macos/build.sh
 ```
@@ -33,6 +34,31 @@ x86_64 slices. With only the CLT the script still builds, with the Intel floor
 raised from macOS 11 to macOS 13, behind a banner saying that is not the
 shipping configuration. `sudo xcodebuild -license accept` is usually all that
 is missing.
+
+## Releasing
+
+```sh
+git tag launcher-v1.0.3 && git push origin launcher-v1.0.3
+```
+
+`launcher.yml` builds it on a macOS runner and attaches the zip to the Release.
+
+**The tag namespace is its own, and that is the whole point of it.** hatch-vcs
+takes a `v*` tag as the Python package's version, so sharing one would make
+every launcher rebuild publish a wheel nobody asked for — two artefacts with
+deliberately opposite release cadences, since the package updates itself
+through `uv` and this one has to be downloaded again by hand. `launcher-v*`
+does not match `v*`, so neither workflow can be started by the other's tag.
+
+The runner is not a convenience. It has a full Xcode, so it can reach the
+macOS 11 Intel floor a machine with only the Command Line Tools cannot — and
+the workflow *asserts* the floor it got rather than trusting the banner, which
+is the difference between a build that warns and a release that cannot ship
+something narrower than what was tested.
+
+The version in the tag is stamped into `Info.plist`. It is **not** the
+generation: that is `launcherGeneration` in `Manifest.swift`, and it moves only
+when the protocol does.
 
 ## What it is allowed to know
 
@@ -118,8 +144,16 @@ software on it -- which is the state that made an uninstall worth building.
 
 ## Testing it
 
-A real run takes over `com.gammonview.helper` from whatever is already serving
-it, so there is one affordance for testing and it is not a supported interface:
+`checks.sh` covers every place the launcher decides something from data it did
+not produce: the two JSON shapes the helper emits and the plist it writes
+itself. Those are the parts worth pinning, because this ships frozen — a
+misread field is not a bug that gets fixed next week, it is a bug sitting on
+other people's computers. Both readers it exercises are in their current form
+because an earlier one was wrong in exactly that way. It runs on every push.
+
+The rest is irreducibly about seizing a machine. A real run takes over
+`com.gammonview.helper` from whatever is already serving it, so there is one
+affordance for testing and it is not a supported interface:
 
 ```sh
 export GAMMONVIEW_INSTALLER_ROOT=/tmp/gv-test

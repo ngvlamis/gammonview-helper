@@ -19,3 +19,6 @@ wheels/
 # poking at it. It holds a worker token.
 config.json
 token
+
+# Finder leaves these anywhere a folder has been opened.
+.DS_Store

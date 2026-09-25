@@ -1,0 +1,143 @@
+# Build `GammonView Installer.app` and attach it to a GitHub Release.
+#
+# **Why this is a second workflow and not a job in `publish.yml`.** The two
+# artefacts in this repository have deliberately different lifecycles. The
+# Python package is released often and updates itself through `uv`; the
+# launcher is frozen by design (`docs/DesktopHelper.md`, "The native surface is
+# a launcher, and it is frozen"), ships unsigned, and is accepted past
+# Gatekeeper exactly once -- so a new one is a thing every existing user has to
+# be asked to download again, and is released as rarely as possible.
+#
+# Sharing `publish.yml`'s trigger would have coupled them: hatch-vcs takes the
+# tag as the package version, so `v0.3.1` *is* a PyPI release, and rebuilding
+# the launcher would have meant publishing a wheel nobody asked for. Hence a
+# separate tag namespace. `launcher-v*` does not match `v*`, so neither
+# workflow can be started by the other's tag, and the check is a glob rather
+# than a convention somebody has to remember.
+#
+#     git tag launcher-v1.0.3 && git push origin launcher-v1.0.3
+#
+# The version in the tag is stamped into `Info.plist`. It is *not* the launcher
+# generation: that is `launcherGeneration` in `Manifest.swift`, an integer
+# compared against `launcher_min` in `helper-release.json`, and it moves only
+# when the protocol does.
+name: launcher
+
+on:
+  push:
+    tags: ["launcher-v*"]
+  # For rebuilding an existing tag, and for checking that a change to the
+  # sources still produces a shippable app before tagging anything.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build the installer
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The decisions the launcher makes from data it did not produce. Cheap,
+      # and they run before the 35 MB of `uv` is fetched: a misread JSON field
+      # is the failure mode this artefact cannot recover from once shipped.
+      - name: checks
+        run: launcher/macos/checks.sh
+
+      - name: version
+        id: version
+        # `launcher-v1.0.3` -> `1.0.3`. A dispatch run has no tag and is not
+        # going to be released, so it gets a number that could not be mistaken
+        # for one if it escaped.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "value=${GITHUB_REF_NAME#launcher-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: build
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: launcher/macos/build.sh
+
+      # **The reason this job exists on a runner rather than on a laptop.**
+      # `build.sh` cannot build an Intel slice for macOS 11 without a full
+      # Xcode, and rather than fail it raises the Intel floor to 13.0 behind a
+      # loud banner -- correct for development, and silent in a log nobody
+      # reads. A GitHub macOS runner has Xcode, so the floor is reachable here;
+      # what follows is the assertion that it was actually reached. Without it
+      # this workflow's whole advantage over a local build is unenforced.
+      - name: assert the shipping configuration
+        run: |
+          set -euo pipefail
+          BIN="launcher/macos/build/GammonView Installer.app/Contents/MacOS/GammonViewInstaller"
+
+          archs="$(lipo -archs "$BIN")"
+          echo "architectures: $archs"
+          for want in x86_64 arm64; do
+            case " $archs " in *" $want "*) ;; *)
+              echo "::error::$want slice missing -- a quarter of this audience is on Intel"
+              exit 1 ;;
+            esac
+          done
+
+          for arch in x86_64 arm64; do
+            minos="$(vtool -arch "$arch" -show-build-version "$BIN" \
+                     | awk '/minos/ {print $2}')"
+            echo "$arch minimum macOS: $minos"
+            if [ "$minos" != "11.0" ]; then
+              echo "::error::$arch floor is $minos, not 11.0 -- build.sh fell back"
+              exit 1
+            fi
+          done
+
+          # Ad-hoc, but it must verify: an invalid seal is not "unsigned", it
+          # is refused outright, and the user never reaches the Open Anyway
+          # button that unsigned-but-sealed apps at least offer.
+          codesign --verify --deep --strict --verbose=2 \
+            "launcher/macos/build/GammonView Installer.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: launcher/macos/build/GammonView-Installer.zip
+          if-no-files-found: error
+
+  # Separate job so that `contents: write` is not held while anything is being
+  # compiled -- the same split, for the same reason, as `publish.yml`.
+  release:
+    name: attach to the GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: dist/
+
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so `gh` has no remote to infer a
+          # repository from. `publish.yml` records the run that failed here.
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --notes "The macOS installer for GammonView Helper.
+
+          Download \`GammonView-Installer.zip\`, open it, and run **GammonView Installer**.
+          macOS will refuse it the first time: go to System Settings -> Privacy &
+          Security, scroll down, and press **Open Anyway**. It is unsigned, and that
+          happens once per computer."
+          fi
