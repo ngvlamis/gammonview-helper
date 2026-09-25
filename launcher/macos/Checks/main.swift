@@ -82,6 +82,31 @@ check("link",
       args + ["link", "--porcelain", "--no-browser"]
         == ["--site", "https://beta.gammonview.com", "link", "--porcelain", "--no-browser"])
 
+// --- unlinkArguments: the two dialects of one command ---
+//
+// The fallback is unreachable on a machine running a current helper, which is
+// exactly the machine this would be tested on by hand. It exists because an
+// older helper exits 2 on the unrecognised flag *before doing anything*, so a
+// run that only lost its report had in fact done nothing -- and the credential
+// stayed in the Keychain while the files were deleted around it.
+
+print("unlinkArguments -- and the older dialect the fallback speaks")
+check("porcelain, with a site",
+      Installer.unlinkArguments(porcelain: true, site: "https://gammonview.com")
+        == ["--site", "https://gammonview.com", "unlink", "--porcelain"])
+check("the fallback drops only the flag, never the site",
+      Installer.unlinkArguments(porcelain: false, site: "https://gammonview.com")
+        == ["--site", "https://gammonview.com", "unlink"])
+check("no site, porcelain",
+      Installer.unlinkArguments(porcelain: true, site: nil) == ["unlink", "--porcelain"])
+check("no site, fallback",
+      Installer.unlinkArguments(porcelain: false, site: nil) == ["unlink"])
+check("an empty site is not a site here either",
+      Installer.unlinkArguments(porcelain: false, site: "") == ["unlink"])
+check("the subcommand always follows the global option",
+      Installer.unlinkArguments(porcelain: true, site: "https://x.test").firstIndex(of: "unlink")
+        == 2)
+
 // --- accountVerdict: may the uninstaller say the account row is gone? ---
 //
 // Same asymmetry as `linkedVerdict`, pointing the other way: `.skipped` is the

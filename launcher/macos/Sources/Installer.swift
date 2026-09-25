@@ -195,21 +195,51 @@ enum Installer {
     /// which matters because this runs on machines being taken offline.
     private static func unlinkFromAccount() -> AccountOutcome {
         guard isInstalled else { return .skipped }
-        var arguments: [String] = []
-        if let site = LoginItem.installedSite() { arguments += ["--site", site] }
+        let site = LoginItem.installedSite()
 
         var line: String?
         do {
             try runProcess(
-                Paths.helper, arguments + ["unlink", "--porcelain"],
+                Paths.helper, unlinkArguments(porcelain: true, site: site),
                 what: "Unlinking this computer",
                 onOutput: { line = $0 })
+            return accountVerdict(line)
         } catch {
-            // A helper too broken to run is a helper that cannot tell the site
-            // anything. The files still go.
-            return .skipped
+            // Fall through and try again without the flag.
         }
-        return accountVerdict(line)
+
+        // **`--porcelain` is newer than `unlink` is**, and the helper this is
+        // uninstalling is whatever version was installed -- which, for every
+        // machine set up before the flag shipped, is one that exits 2 on an
+        // unrecognised argument *before doing anything at all*.
+        //
+        // That was a real uninstall on a real machine: the credential stayed in
+        // the Keychain, the files were deleted around it, and nothing was left
+        // that knew how to clear it. The bug was not the missing flag -- that
+        // degradation was intended -- it was assuming a failed run had still
+        // done the work and only lost the report.
+        //
+        // So the retry is the bare command, which exists in every released
+        // helper and clears the credential just the same. What is lost is only
+        // the ability to say what became of the account row, and `.skipped` is
+        // exactly that: nothing was confirmed, so the user is told to check.
+        _ = try? runProcess(
+            Paths.helper, unlinkArguments(porcelain: false, site: site),
+            what: "Unlinking this computer")
+        return .skipped
+    }
+
+    /// The argv for `unlink`, in either dialect.
+    ///
+    /// Internal so the two forms can be compared without a helper installed --
+    /// the fallback above is unreachable on a machine running a current helper,
+    /// which is precisely the machine anybody would test on.
+    static func unlinkArguments(porcelain: Bool, site: String?) -> [String] {
+        var arguments: [String] = []
+        if let site, !site.isEmpty { arguments += ["--site", site] }
+        arguments.append("unlink")
+        if porcelain { arguments.append("--porcelain") }
+        return arguments
     }
 
     /// The decision `unlinkFromAccount` makes, separated from the process that
