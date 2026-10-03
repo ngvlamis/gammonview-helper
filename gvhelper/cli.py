@@ -335,7 +335,9 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
         # `hello` rather than a dedicated ping: it is idempotent, it is the call
         # the daemon makes at startup anyway, and making it here means `status`
         # also refreshes what the site knows this machine can do.
-        client.hello(machine_name(), __version__, engine_version(), available_presets())
+        account = client.hello(machine_name(), __version__, engine_version(), available_presets())
+        if account and not args.porcelain:
+            _say(f"  account    : {account}")
         report("working", "working")
         return 0
     except Unauthorized:
@@ -349,6 +351,37 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     finally:
         client.close()
+
+
+def unlink(cfg: Config, *, remote: bool = True) -> tuple[str, str | None]:
+    """Both halves of unlinking, as `cmd_unlink` describes them.
+
+    Returns what happened to the account's row -- "removed", "left" (tried and
+    failed, with the reason) or "skipped" -- and the reason. A function of its
+    own because the menu-bar item unlinks too, and must do it this way rather
+    than with a copy that forgets the order.
+    """
+    token = load_token(cfg)
+
+    # "skipped" is a truthful third answer and not a synonym for "left": one
+    # means nobody tried, the other means it was tried and did not work. The
+    # launcher shows a different sentence for each.
+    account = "skipped"
+    reason = None
+    if token and remote:
+        client = WorkerClient(cfg, token)
+        try:
+            client.retire()
+            account = "removed"
+        except RelayError as e:
+            account, reason = "left", str(e)
+        finally:
+            client.close()
+
+    clear_token(cfg)
+    cfg.worker_id = None
+    save(cfg)
+    return account, reason
 
 
 def cmd_unlink(cfg: Config, args: argparse.Namespace) -> int:
@@ -376,26 +409,7 @@ def cmd_unlink(cfg: Config, args: argparse.Namespace) -> int:
     remote half is *reported* rather than raised -- the one thing that must not
     happen is claiming the row is gone when it is not.
     """
-    token = load_token(cfg)
-
-    # "skipped" is a truthful third answer and not a synonym for "left": one
-    # means nobody tried, the other means it was tried and did not work. The
-    # launcher shows a different sentence for each.
-    account = "skipped"
-    reason = None
-    if token and not args.local_only:
-        client = WorkerClient(cfg, token)
-        try:
-            client.retire()
-            account = "removed"
-        except RelayError as e:
-            account, reason = "left", str(e)
-        finally:
-            client.close()
-
-    clear_token(cfg)
-    cfg.worker_id = None
-    save(cfg)
+    account, reason = unlink(cfg, remote=not args.local_only)
 
     if args.porcelain:
         # `--porcelain` is the installer's Remove and nothing else, and the

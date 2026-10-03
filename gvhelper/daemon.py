@@ -89,6 +89,9 @@ class Control:
         self.state = "starting"
         #: The running job's counters, or None between jobs.
         self.progress: Progress | None = None
+        #: The email of the account this machine is linked to, once `hello`
+        #: has said; None before that, when unlinked, and on an older site.
+        self.account: str | None = None
 
     @property
     def paused(self) -> bool:
@@ -273,6 +276,7 @@ def wait_for_token(
     said_at = 0.0
     if control is not None:
         control.state = "unlinked"
+        control.account = None
     while True:
         if control is not None and control.stopping:
             return None
@@ -304,7 +308,9 @@ def serve(
     name = machine_name()
 
     try:
-        client.hello(name, __version__, engine_version(), available_presets())
+        account = client.hello(name, __version__, engine_version(), available_presets())
+        if control is not None:
+            control.account = account
     except Unauthorized as e:
         _log(str(e))
         return 2

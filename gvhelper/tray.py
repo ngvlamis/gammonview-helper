@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Nicholas Vlamis
 
-"""The menu-bar item: what the helper is doing, and Pause, Link and Quit.
+"""The menu-bar item: what the helper is doing, whose it is, and its controls.
 
 macOS only, for now. The Mac is the one platform with an installer and a login
 item, which makes it the one place the helper runs with no terminal: without
@@ -35,6 +35,8 @@ import queue
 import subprocess
 import sys
 import threading
+import time
+import webbrowser
 from importlib.resources import files
 from typing import Callable
 
@@ -131,6 +133,13 @@ class _MenuLink:
         self._events.put(("failed", reason))
 
 
+def account_line(control: Control) -> str | None:
+    """Whose matches this machine analyses, once the site has said."""
+    if control.account and control.state != "unlinked":
+        return f"Linked to {control.account}"
+    return None
+
+
 def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
     """Run `loop` on a background thread and the menu on this one.
 
@@ -139,8 +148,8 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
     import rumps
     from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 
-    from . import macapp
-    from .cli import pair
+    from . import macapp, update
+    from .cli import pair, unlink
 
     if under_login_item():
         # Refreshed on every start, so an update reaches it: the one way back
@@ -176,13 +185,25 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
             super().__init__(
                 "GammonView Helper", icon=_icon(False), template=True, quit_button=None
             )
+            # No callback, so drawn as text rather than as something to click.
             self.status = rumps.MenuItem("Starting…")
+            self.account = rumps.MenuItem("")
             self.toggle = rumps.MenuItem("Pause", callback=self.on_toggle)
+            self.open_site = rumps.MenuItem("Open GammonView", callback=self.on_open)
             self.link = rumps.MenuItem("Link This Computer…", callback=self.on_link)
+            self.update = rumps.MenuItem("Update…", callback=self.on_update)
+            self.about = rumps.MenuItem("About GammonView Helper", callback=self.on_about)
             self.quit = rumps.MenuItem("Quit GammonView Helper", callback=self.on_quit)
-            self.menu = [self.status, None, self.toggle, self.link, None, self.quit]
+            self.menu = [
+                self.status, self.account, None,
+                self.toggle, self.open_site, self.link, None,
+                self.update, self.about, self.quit,
+            ]
             self._linking = False
+            self._updating = False
+            self._release: dict | None = None
             self._paused_drawn = False
+            threading.Thread(target=self._watch_releases, name="helper-update", daemon=True).start()
             self._timer = rumps.Timer(self.refresh, REFRESH_INTERVAL)
             self._timer.start()
 
@@ -203,13 +224,26 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
                     break
                 self.on_link_event(event)
 
-            self.status.title = status_line(control)
+            self.status.title = "Updating…" if self._updating else status_line(control)
+            line = account_line(control)
+            self.account.hidden = line is None
+            self.account.title = line or ""
             self.toggle.title = "Resume" if control.paused else "Pause"
-            # Linking an already-linked machine registers it twice, and the
-            # account then lists one computer as two. So the item is there only
-            # when there is nothing linked yet.
-            self.link.hidden = control.state != "unlinked"
-            self.link.title = "Linking…" if self._linking else "Link This Computer…"
+            # One item, two jobs. Linking an already-linked machine registers it
+            # twice, and the account then lists one computer as two, so Link is
+            # offered only when nothing is linked -- and Unlink only once the
+            # loop has a credential, which `starting` does not yet know.
+            unlinked = control.state == "unlinked"
+            self.link.hidden = control.state == "starting"
+            if unlinked:
+                self.link.title = "Linking…" if self._linking else "Link This Computer…"
+                self.link.set_callback(self.on_link)
+            else:
+                self.link.title = "Unlink This Computer…"
+                # Not mid-match: the result would have nowhere to go, and the
+                # browser would wait out the lease on a job nobody is running.
+                self.link.set_callback(None if control.state == "busy" else self.on_unlink)
+            self._draw_update()
             # A percentage beside the icon while analysing, and nothing
             # otherwise: the icon alone should be the quiet state.
             progress = control.progress
@@ -288,6 +322,143 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
                 rumps.alert(title="Linking did not finish", message=event[1])
             elif kind == "done":
                 self._linking = False
+            elif kind == "unlink-left":
+                bring_forward()
+                rumps.alert(
+                    title="This computer is unlinked",
+                    message=(
+                        "It could not be removed from your account's settings "
+                        f"({event[1]}). Use Unlink there to finish."
+                    ),
+                )
+            elif kind == "update-failed":
+                self._updating = False
+                bring_forward()
+                rumps.alert(title="The update did not finish", message=event[1])
+            elif kind == "exit":
+                rumps.quit_application()
+
+        # --- Open, About ----------------------------------------------------
+
+        def on_open(self, _sender) -> None:
+            webbrowser.open(cfg.site)
+
+        def on_about(self, _sender) -> None:
+            from AppKit import NSImage
+
+            bring_forward()
+            NSApplication.sharedApplication().orderFrontStandardAboutPanelWithOptions_(
+                {
+                    "ApplicationName": "GammonView Helper",
+                    "ApplicationVersion": f"Version {__version__}",
+                    # Without this AppKit adds the *process's* bundle version
+                    # in brackets, which is Python's.
+                    "Version": "",
+                    "ApplicationIcon": NSImage.alloc().initWithContentsOfFile_(
+                        str(files("gvhelper") / "resources" / "AppIcon.icns")
+                    ),
+                    "Copyright": "Analyses your GammonView matches on this computer.",
+                }
+            )
+
+        # --- Unlink ----------------------------------------------------------
+
+        def on_unlink(self, _sender) -> None:
+            bring_forward()
+            whose = f" from {control.account}" if control.account else ""
+            confirmed = rumps.alert(
+                title=f"Unlink this computer{whose}?",
+                message=(
+                    "It will stop analysing matches for that account, and be "
+                    "removed from the account's settings. You can link it again "
+                    "from this menu."
+                ),
+                ok="Unlink",
+                cancel="Cancel",
+            )
+            if confirmed != 1:
+                return
+            # Said at once, rather than when the loop's held poll comes back
+            # refused: that can be 25 seconds of the menu still offering Unlink.
+            control.state = "unlinked"
+            control.account = None
+            threading.Thread(target=self._unlink, name="helper-unlink", daemon=True).start()
+            self.refresh()
+
+        def _unlink(self) -> None:
+            account, reason = unlink(cfg)
+            if account == "left":
+                events.put(("unlink-left", reason))
+
+        # --- Update ----------------------------------------------------------
+
+        def _watch_releases(self) -> None:
+            while not control.stopping:
+                release = update.latest(cfg)
+                if release is not None:
+                    self._release = release
+                control.sleep(update.CHECK_INTERVAL)
+
+        def _draw_update(self) -> None:
+            release = self._release
+            offered = release is not None and update.newer(release["version"], __version__)
+            self.update.hidden = not offered
+            if offered:
+                self.update.title = f"Update to {release['version']}…"
+                # An update restarts the helper, which would end a match
+                # half-analysed; the item comes back when it is done.
+                busy = control.state == "busy" or self._updating
+                self.update.set_callback(None if busy else self.on_update)
+
+        def on_update(self, _sender) -> None:
+            release = self._release
+            if release is None:
+                return
+            bring_forward()
+            root = update.installer_root(os.path.abspath(sys.argv[0]))
+            if root is None or not under_login_item():
+                rumps.alert(
+                    title=f"GammonView Helper {release['version']} is available",
+                    message=(
+                        "This copy was not installed by the GammonView installer, "
+                        "so update it the way you installed it -- for example, "
+                        "`uv tool upgrade gammonview-helper`."
+                    ),
+                )
+                return
+            confirmed = rumps.alert(
+                title=f"Update GammonView Helper to {release['version']}?",
+                message="It takes a minute or two, and the helper restarts when it is done.",
+                ok="Update",
+                cancel="Cancel",
+            )
+            if confirmed != 1:
+                return
+            self._updating = True
+            threading.Thread(
+                target=self._update, args=(root, release), name="helper-update-install",
+                daemon=True,
+            ).start()
+            self.refresh()
+
+        def _update(self, root, release: dict) -> None:
+            problem = update.install(root, release)
+            if problem is not None:
+                events.put(("update-failed", problem))
+                return
+            # Restarted the way Quit stops: through launchd, which sends this
+            # process SIGTERM and starts the job again from the new venv.
+            control.stop()
+            worker.join(QUIT_GRACE)
+            self._sign_off()
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                check=False,
+            )
+            time.sleep(QUIT_GRACE)
+            # Still here: the kickstart did not take. The new version is
+            # installed, so leaving is enough -- launchd's KeepAlive starts it.
+            events.put(("exit",))
 
         # --- Quit ------------------------------------------------------------
 

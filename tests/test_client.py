@@ -112,6 +112,23 @@ def test_hello_reports_the_presets_this_machine_can_run(cfg):
 
 
 @respx.mock
+def test_hello_says_which_account_this_machine_is_linked_to(cfg):
+    """Pairing never tells the helper; `hello` does, for the menu to show."""
+    respx.post(f"{RELAY}/worker/hello").mock(
+        return_value=httpx.Response(200, json={"status": "ok", "account": "me@example.com"})
+    )
+    assert WorkerClient(cfg, "tok").hello("Mac", "1.0.0", "bgsage", []) == "me@example.com"
+
+
+@respx.mock
+def test_a_site_that_does_not_name_the_account_is_not_an_error(cfg):
+    respx.post(f"{RELAY}/worker/hello").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    assert WorkerClient(cfg, "tok").hello("Mac", "1.0.0", "bgsage", []) is None
+
+
+@respx.mock
 def test_an_empty_poll_is_a_job_of_none(cfg):
     """The relay answers `{"job": null}` rather than a 204 so the loop has one
     response shape to parse and no status-code branch."""

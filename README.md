@@ -72,13 +72,21 @@ up within a few seconds. The same is true if you unlink and re-link later.
 
 On a Mac, `run` puts a doubling cube showing 2 in the menu bar. Its menu says
 what the helper is doing — ready, analysing (with a percentage beside the
-icon), paused, or not linked — and has three controls:
+icon), paused, or not linked — and which account it is linked to, and has
+these controls:
 
 - **Pause / Resume.** A match already being analysed finishes first; after that
   the helper takes no more until you resume. The website stops offering this
   computer at once, and sends your analyses to the shared server instead.
-- **Link This Computer…** — only while it is not linked. Opens the browser and
+- **Open GammonView.**
+- **Link This Computer…** — while it is not linked. Opens the browser and
   shows the word to pick in a dialog, exactly as `link` does in a terminal.
+  Once linked, the same place offers **Unlink This Computer…**, which asks
+  first and does what `unlink` does. Not while a match is being analysed.
+- **Update to …** — only when gammonview.com offers a newer helper. Installed
+  by the installer, it updates itself and restarts; installed with `uv tool` or
+  `pipx`, it tells you to upgrade it the same way.
+- **About GammonView Helper**, with the version.
 - **Quit GammonView Helper.** Asks first, then stops it until you next log in
   or open the app below. A match being analysed at that moment is stopped, and
   the website says why.

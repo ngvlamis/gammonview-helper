@@ -55,3 +55,12 @@ def test_the_icons_ship_with_the_package():
 
     for paused in (False, True):
         assert Path(tray._icon(paused)).is_file()
+
+
+def test_the_account_line_appears_once_the_site_has_named_it():
+    c = Control()
+    assert tray.account_line(c) is None
+    c.state, c.account = "idle", "me@example.com"
+    assert tray.account_line(c) == "Linked to me@example.com"
+    c.state = "unlinked"
+    assert tray.account_line(c) is None, "unlinking clears it before the loop notices"

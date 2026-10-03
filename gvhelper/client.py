@@ -257,20 +257,29 @@ class WorkerClient:
     def _base(self) -> str:
         return f"{self.cfg.relay_base}/worker"
 
-    def hello(self, name: str, version: str, engine: str, presets: list[str]) -> None:
-        """Register this machine and what it can do.
+    def hello(self, name: str, version: str, engine: str, presets: list[str]) -> str | None:
+        """Register this machine and what it can do, and return whose it is.
 
         The preset list is the useful half. The site gates its menu on what a
         live helper reports, so this call is how *World Class* appears in a
         browser that would otherwise only offer the shared worker's three.
+
+        The answer is the account's email, for the menu to show -- pairing
+        never says which account approved it. None from a site older than that.
         """
-        _check(
+        response = _check(
             _send(self._client, "POST",
                 f"{self._base}/hello",
                 json={"name": name, "version": version, "engine": engine, "presets": presets},
             ),
             "Could not register this computer.",
         )
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        account = body.get("account") if isinstance(body, dict) else None
+        return account if isinstance(account, str) and account else None
 
     def next_job(self, wait: int = POLL_WAIT) -> Job | None:
         """Hold a poll open until there is work, or `wait` elapses.
