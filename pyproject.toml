@@ -37,14 +37,20 @@ classifiers = [
 # token is a credential and belongs in the platform's credential store rather
 # than in a file next to the config.
 #
-# Deliberately absent: anything for watching folders or drawing a tray icon.
-# Those are v2 (`docs/DesktopHelper.md`, "v1 analyses. It does not watch
-# folders"), and a dependency added early is one shipped to every user for a
-# feature none of them has yet.
+# `rumps` draws the menu-bar item, and only on macOS -- the one platform with
+# an installer and a login item, so the one where the helper runs with no
+# terminal to stop it from. It is a base dependency rather than an extra
+# because the installer is frozen and asks for plain `gammonview-helper`: an
+# extra would never reach a machine it set up. Windows and Linux get nothing
+# extra until they get an installer too.
+#
+# Still absent: anything for watching folders. That is v2 (`docs/DesktopHelper.md`,
+# "v1 analyses. It does not watch folders").
 dependencies = [
     "gammonview[engine]>=1.0.0",
     "httpx>=0.27",
     "keyring>=25.0",
+    "rumps>=0.4; sys_platform == 'darwin'",
 ]
 
 [project.urls]
@@ -66,6 +72,7 @@ build-backend = "hatchling.build"
 # what hatch-vcs stamps when it cannot find a tag -- the failure mode worth
 # guarding, because it is silent rather than loud.
 source = "vcs"
+
 
 [tool.hatch.build.targets.wheel]
 packages = ["gvhelper"]

@@ -63,6 +63,92 @@ RETRY_MIN = 2.0
 RETRY_MAX = 60.0
 
 
+class Control:
+    """What the menu-bar item can ask of the loop, and what it reads back.
+
+    The loop runs on a background thread under the menu (AppKit owns the main
+    one), so this is the whole of the interface between them: two requests
+    going in -- pause, stop -- and a few facts coming out for the menu to draw.
+    The terminal path builds one too and never touches it, so there is a
+    single loop rather than a menu-bar variant of it.
+
+    **Pause lets the current match finish.** It was queued from somebody's own
+    browser and is partly done; abandoning it would cost them the work and a
+    five-minute wait for the lease to lapse. Pause stops the *next* claim.
+
+    **Stop does not.** Quit is the user saying the machine is wanted for
+    something else right now, so the running job is failed with a sentence the
+    browser shows, rather than left to time out.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._paused = False
+        self._stopping = False
+        #: "starting" | "unlinked" | "idle" | "busy" | "paused" | "retrying"
+        self.state = "starting"
+        #: The running job's counters, or None between jobs.
+        self.progress: Progress | None = None
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    @property
+    def stopping(self) -> bool:
+        return self._stopping
+
+    def pause(self) -> None:
+        with self._cond:
+            self._paused = True
+            self._cond.notify_all()
+
+    def resume(self) -> None:
+        with self._cond:
+            self._paused = False
+            self._cond.notify_all()
+
+    def stop(self) -> None:
+        with self._cond:
+            self._stopping = True
+            self._cond.notify_all()
+
+    def wait_while_paused(self) -> None:
+        """Block until resumed or stopped."""
+        with self._cond:
+            self._cond.wait_for(lambda: not self._paused or self._stopping)
+
+    def sleep(self, seconds: float) -> None:
+        """`time.sleep`, cut short by `stop` -- so Quit never waits out a backoff."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._stopping, timeout=seconds)
+
+
+def _sleep(control: Control | None, seconds: float) -> None:
+    # `time.sleep` when nobody is listening, which is what the tests replace.
+    if control is None:
+        time.sleep(seconds)
+    else:
+        control.sleep(seconds)
+
+
+#: What the browser shows when the helper is quit mid-analysis.
+QUIT_MESSAGE = "GammonView Helper was quit on {machine} before this analysis finished."
+
+
+def sign_off(client: WorkerClient) -> None:
+    """Tell the site to stop routing work here. Best effort, and never raises.
+
+    Failing to send it costs what it cost before the route existed -- two
+    minutes of the site believing a quiet helper is still there -- so it is not
+    worth surfacing, let alone worth refusing to pause over.
+    """
+    try:
+        client.offline()
+    except Exception as e:  # noqa: BLE001 - best effort, per the docstring
+        _log(f"could not tell the site this computer is pausing: {e}")
+
+
 def _log(message: str) -> None:
     """One line, flushed, with a clock on it.
 
@@ -73,7 +159,7 @@ def _log(message: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def run_job(client: WorkerClient, job: Job, cfg: Config) -> None:
+def run_job(client: WorkerClient, job: Job, cfg: Config, control: Control | None = None) -> None:
     """Analyse one job and deliver it, or report why not.
 
     The analysis runs on a thread so this one can keep posting progress -- which
@@ -95,11 +181,19 @@ def run_job(client: WorkerClient, job: Job, cfg: Config) -> None:
 
     thread = threading.Thread(target=work, name=f"analyze-{job.id}", daemon=True)
     _log(f"analyzing {job.id} ({job.preset or 'default preset'})")
+    if control is not None:
+        control.progress = progress
     thread.start()
 
     last_posted: tuple[int, int] | None = None
     while thread.is_alive():
         thread.join(PROGRESS_INTERVAL)
+        if control is not None and control.stopping:
+            # The engine thread is a daemon and goes with the process; what
+            # must not go with it is the browser's answer.
+            _log(f"job {job.id} abandoned: the helper is quitting")
+            client.fail(job.id, QUIT_MESSAGE.format(machine=machine_name()))
+            return
         done, total = progress.get()
         # Posted even when the counts have not moved, because this doubles as
         # the lease renewal: a single very slow decision must not read as a
@@ -154,8 +248,13 @@ LINK_POLL_INTERVAL = 3.0
 LINK_LOG_INTERVAL = 900.0
 
 
-def wait_for_token(cfg: Config, *, current: str | None = None) -> str:
-    """Block until the credential store holds a usable token. Never returns None.
+def wait_for_token(
+    cfg: Config, *, current: str | None = None, control: Control | None = None
+) -> str | None:
+    """Block until the credential store holds a usable token.
+
+    Returns None only when `control` is stopped -- Quit from the menu while the
+    helper is waiting to be linked.
 
     Two callers, one behaviour. A helper that has never been linked waits with
     `current=None`; a helper whose token the relay just rejected waits with the
@@ -172,7 +271,11 @@ def wait_for_token(cfg: Config, *, current: str | None = None) -> str:
     whatever Windows would have wanted.
     """
     said_at = 0.0
+    if control is not None:
+        control.state = "unlinked"
     while True:
+        if control is not None and control.stopping:
+            return None
         token = load_token(cfg)
         if token and token != current:
             return token
@@ -180,14 +283,21 @@ def wait_for_token(cfg: Config, *, current: str | None = None) -> str:
         if said_at == 0.0 or now - said_at >= LINK_LOG_INTERVAL:
             _log("not linked yet -- waiting for `gammonview-helper link`")
             said_at = now
-        time.sleep(LINK_POLL_INTERVAL)
+        _sleep(control, LINK_POLL_INTERVAL)
 
 
-def serve(cfg: Config, token: str, *, once: bool = False) -> int:
+def serve(
+    cfg: Config, token: str, *, once: bool = False, control: Control | None = None
+) -> int:
     """Poll for work until something stops us. Returns a process exit code.
 
     `once` runs a single poll-and-work cycle, which is what the tests use and
     what makes a "does this actually work" check possible without a signal.
+
+    `control` is the menu-bar item's handle on the loop; see `Control`. Pause
+    and stop are both checked between polls, so a held poll (up to 25s) runs
+    out first -- and anything it claims in that time is run, because a claimed
+    job has nowhere else to go until its lease lapses.
     """
     lower_priority(cfg.nice)
     client = WorkerClient(cfg, token)
@@ -208,13 +318,38 @@ def serve(cfg: Config, token: str, *, once: bool = False) -> int:
     _log(f"presets: {', '.join(available_presets()) or '(engine not installed)'}")
 
     delay = RETRY_MIN
+    signed_off = False
     try:
         while True:
+            if control is not None:
+                if control.stopping:
+                    return 0
+                if control.paused:
+                    # Said once per pause rather than once per loop: the
+                    # menu has normally said it already, and this is the
+                    # retry for when that attempt could not reach the site.
+                    if not signed_off:
+                        sign_off(client)
+                        signed_off = True
+                        _log("paused")
+                    control.state = "paused"
+                    control.wait_while_paused()
+                    continue
+                if signed_off:
+                    _log("resumed")
+                    signed_off = False
+                control.state = "idle"
             try:
                 job = client.next_job()
                 delay = RETRY_MIN
                 if job is not None:
-                    run_job(client, job, cfg)
+                    if control is not None:
+                        control.state = "busy"
+                    try:
+                        run_job(client, job, cfg, control)
+                    finally:
+                        if control is not None:
+                            control.progress = None
                 if once:
                     return 0
             except Unauthorized as e:
@@ -235,7 +370,9 @@ def serve(cfg: Config, token: str, *, once: bool = False) -> int:
                 continue
             if once:
                 return 1
-            time.sleep(delay)
+            if control is not None:
+                control.state = "retrying"
+            _sleep(control, delay)
             delay = min(RETRY_MAX, delay * 2)
     except KeyboardInterrupt:
         _log("stopped")

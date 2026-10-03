@@ -1,4 +1,4 @@
-# The relay protocol, revision 1
+# The relay protocol, revision 3
 
 What this package talks to, and the one document that has to stay true when the
 two halves of it are maintained apart.
@@ -50,6 +50,7 @@ rather than offering another go.
 | POST | `/worker/jobs/{id}/progress` | also the lease renewal |
 | POST | `/worker/jobs/{id}/result` | raw `application/octet-stream` body |
 | POST | `/worker/jobs/{id}/error` | message truncated to 500 chars |
+| POST | `/worker/offline` | not taking work for now; the next poll undoes it |
 
 These carry `Authorization: Bearer <worker token>`, a session whose `scope` is
 `worker`. The account routes reject it — the partition between `current_user`
@@ -101,3 +102,15 @@ nobody here can update.
 
 A revision-1 client works unchanged against a revision-2 relay. The number is
 for reading logs and for knowing what to check, not a handshake.
+
+**3** — 2026-10-02, for the menu-bar item's Pause and Quit. `POST
+/worker/offline` marks this machine not `live` at once, instead of after the
+120 seconds of silence it otherwise takes — two minutes in which the site said
+Connected and queued matches for a helper that had stopped asking. It sets an
+`offline_at` beside `last_seen_at` rather than ageing `last_seen_at`, so the
+settings page's "last seen" stays true. Only `next-job` and `hello` clear it:
+progress and results on a match the helper is finishing *after* Pause renew the
+lease without making the machine available again.
+
+A revision-3 client against a revision-2 relay gets a 404 from that route and
+treats it as success: going quiet is what pausing did before the route existed.

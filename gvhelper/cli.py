@@ -10,6 +10,9 @@ Four commands, and the first one is the only one most people will ever type:
     gammonview-helper status     # what is configured, and is the link alive
     gammonview-helper unlink     # forget this machine's credentials
 
+And `start`, which nobody types: it is what opening "GammonView Helper" in
+Applications runs (`macapp.py`).
+
 Written for a terminal a non-technical person has been talked into opening. The
 output is sentences rather than log lines, the word to confirm is unmissable,
 and every failure says what to do next instead of only what went wrong -- the
@@ -144,8 +147,17 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
     happened.
     """
     out = _PorcelainLink() if args.porcelain else _HumanLink()
+    return pair(cfg, out, args.name or machine_name(), open_browser=not args.no_browser)
+
+
+def pair(cfg: Config, out, machine: str, *, open_browser: bool = True) -> int:
+    """The flow itself, narrated through `out` (`offer`, `linked`, `failed`).
+
+    Separate from `cmd_link` because the menu-bar item links too, and must run
+    this very flow rather than a copy: pairing is the part of the helper most
+    likely to change, and two copies of it is one that falls behind.
+    """
     pairing = PairingClient(cfg)
-    machine = args.name or machine_name()
     platform = platform_name()
 
     try:
@@ -161,7 +173,7 @@ def cmd_link(cfg: Config, args: argparse.Namespace) -> int:
     expires_in = int(offer.get("expires_in") or 60)
     out.offer(machine, platform, offer["word"], url, expires_in)
 
-    if not args.no_browser:
+    if open_browser:
         try:
             webbrowser.open(url)
         except Exception:  # pragma: no cover - a machine with no browser
@@ -214,7 +226,7 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     "does this work" check use, and neither can block for a credential that is
     never coming.
     """
-    from .daemon import serve, wait_for_token
+    from .daemon import Control, serve, wait_for_token
 
     token = load_token(cfg)
     if not token and args.once:
@@ -222,18 +234,34 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         _say("Run `gammonview-helper link` first.")
         return 2
 
-    while True:
-        if not token:
-            _say("This computer is not linked yet. Waiting for `gammonview-helper link`.")
-            token = wait_for_token(cfg)
-        code = serve(cfg, token, once=args.once)
-        if code != 2 or args.once:
-            return code
-        # The relay rejected this credential. Not fatal and not a reason to
-        # stop: somebody re-pairing is the ordinary fix, and this way the
-        # helper picks it up by itself. `current=` so the revoked token does
-        # not read as an answer.
-        token = wait_for_token(cfg, current=token)
+    def loop(control: Control | None) -> int:
+        nonlocal token
+        while True:
+            if not token:
+                _say("This computer is not linked yet. Waiting for `gammonview-helper link`.")
+                token = wait_for_token(cfg, control=control)
+                if token is None:  # Quit from the menu while waiting
+                    return 0
+            code = serve(cfg, token, once=args.once, control=control)
+            if code != 2 or args.once:
+                return code
+            # The relay rejected this credential. Not fatal and not a reason to
+            # stop: somebody re-pairing is the ordinary fix, and this way the
+            # helper picks it up by itself. `current=` so the revoked token does
+            # not read as an answer.
+            token = wait_for_token(cfg, current=token, control=control)
+            if token is None:
+                return 0
+
+    # The menu-bar item, where there is a menu bar to put it in. `--once` is a
+    # check that must return, and a menu runs until somebody quits it.
+    if not args.once and not args.no_menu:
+        from . import tray
+
+        if tray.available():
+            control = Control()
+            return tray.run(cfg, control, lambda: loop(control))
+    return loop(None)
 
 
 def _parallelism(cfg: Config) -> str:
@@ -370,6 +398,13 @@ def cmd_unlink(cfg: Config, args: argparse.Namespace) -> int:
     save(cfg)
 
     if args.porcelain:
+        # `--porcelain` is the installer's Remove and nothing else, and the
+        # installer predates the app the helper writes into Applications, so it
+        # cannot delete it. Done here, the last moment the package still exists.
+        if sys.platform == "darwin":
+            from . import macapp
+
+            macapp.remove()
         _say(json.dumps({"event": "unlinked", "account": account, "reason": reason}))
         return 0
 
@@ -384,6 +419,19 @@ def cmd_unlink(cfg: Config, args: argparse.Namespace) -> int:
     else:
         _say("The machine may still be listed in your account settings on the website.")
         _say("Use Unlink there to remove it.")
+    return 0
+
+
+def cmd_start(cfg: Config, args: argparse.Namespace) -> int:
+    """Start the login item if it is stopped: what opening the app does."""
+    if sys.platform != "darwin":
+        _say("`start` is for macOS. Elsewhere, run `gammonview-helper run`.")
+        return 2
+    from . import macapp
+
+    message = macapp.start()
+    if message is not None:
+        macapp.tell(message)
     return 0
 
 
@@ -419,6 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do one poll and exit, instead of running until stopped",
     )
+    run.add_argument(
+        "--no-menu",
+        action="store_true",
+        help="do not show the menu-bar item (macOS)",
+    )
     run.set_defaults(func=cmd_run)
 
     status = sub.add_parser("status", help="show configuration and check the link")
@@ -441,6 +494,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit one JSON object instead of sentences (what the installer reads)",
     )
     unlink.set_defaults(func=cmd_unlink)
+
+    start = sub.add_parser(
+        "start", help="start the login item if it is stopped (macOS; what the app runs)"
+    )
+    start.set_defaults(func=cmd_start)
     return parser
 
 

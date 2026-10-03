@@ -240,3 +240,81 @@ def test_waiting_does_not_write_a_line_per_poll(cfg, monkeypatch, capsys):
     daemon.wait_for_token(cfg)
     assert capsys.readouterr().out.count("not linked yet") == 1
 
+
+
+# --- pause and quit, from the menu-bar item ---
+
+@respx.mock
+def test_a_paused_helper_signs_off_and_stops_asking(cfg):
+    """Pause is the site being told, then silence -- not a poll it then ignores,
+    which would claim a match and sit on it."""
+    respx.post(f"{RELAY}/worker/hello").mock(return_value=httpx.Response(200, json={}))
+    offline = respx.post(f"{RELAY}/worker/offline").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    poll = respx.get(f"{RELAY}/worker/next-job").mock(
+        return_value=httpx.Response(200, json={"job": None})
+    )
+    control = daemon.Control()
+    control.pause()
+    t = threading.Thread(target=daemon.serve, args=(cfg, "tok"), kwargs={"control": control}, daemon=True)
+    t.start()
+    for _ in range(200):
+        if control.state == "paused":
+            break
+        threading.Event().wait(0.01)
+    assert control.state == "paused"
+    assert offline.call_count == 1
+    assert poll.call_count == 0
+
+    control.stop()
+    t.join(2)
+    assert not t.is_alive(), "stop must reach a loop that is waiting out a pause"
+
+
+@respx.mock
+def test_quitting_mid_analysis_answers_the_browser(cfg, monkeypatch):
+    """Quit abandons the running match, and says so: a job left to its lease is
+    five minutes of a progress bar going nowhere."""
+    respx.post(f"{RELAY}/worker/hello").mock(return_value=httpx.Response(200, json={}))
+    respx.get(f"{RELAY}/worker/next-job").mock(return_value=httpx.Response(200, json=_job()))
+    respx.post(f"{RELAY}/worker/jobs/j1/progress").mock(return_value=httpx.Response(200, json={}))
+    error = respx.post(f"{RELAY}/worker/jobs/j1/error").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_analyze(match_bytes, preset, progress, **kw):
+        progress.set(1, 10)
+        started.set()
+        release.wait(5)
+        return b"never delivered"
+
+    monkeypatch.setattr(daemon, "analyze", slow_analyze)
+    control = daemon.Control()
+    t = threading.Thread(target=daemon.serve, args=(cfg, "tok"), kwargs={"control": control}, daemon=True)
+    t.start()
+    assert started.wait(2)
+    assert control.state == "busy" and control.progress.get() == (1, 10)
+    control.stop()
+    t.join(2)
+    release.set()
+    assert not t.is_alive()
+    assert "was quit" in error.calls.last.request.read().decode()
+
+
+@respx.mock
+def test_an_older_relay_without_offline_is_not_an_error(cfg):
+    """Before revision 3 the route is a 404, and going quiet is what pausing
+    did then. Nothing to report."""
+    respx.post(f"{RELAY}/worker/offline").mock(return_value=httpx.Response(404))
+    WorkerClient(cfg, "tok").offline()
+
+
+def test_stop_reaches_a_helper_waiting_to_be_linked(cfg, monkeypatch):
+    """Quit from the menu of a machine nobody has linked yet."""
+    monkeypatch.setattr(daemon, "load_token", lambda cfg: None)
+    control = daemon.Control()
+    control.stop()
+    assert daemon.wait_for_token(cfg, control=control) is None

@@ -68,6 +68,29 @@ rather than giving up, so the usual order — install, let it start, then link i
 the browser — needs no third step telling it to look again; it picks the link
 up within a few seconds. The same is true if you unlink and re-link later.
 
+### The menu-bar item (macOS)
+
+On a Mac, `run` puts a doubling cube showing 2 in the menu bar. Its menu says
+what the helper is doing — ready, analysing (with a percentage beside the
+icon), paused, or not linked — and has three controls:
+
+- **Pause / Resume.** A match already being analysed finishes first; after that
+  the helper takes no more until you resume. The website stops offering this
+  computer at once, and sends your analyses to the shared server instead.
+- **Link This Computer…** — only while it is not linked. Opens the browser and
+  shows the word to pick in a dialog, exactly as `link` does in a terminal.
+- **Quit GammonView Helper.** Asks first, then stops it until you next log in
+  or open the app below. A match being analysed at that moment is stopped, and
+  the website says why.
+
+`run --no-menu` leaves the item out. It is never shown over SSH.
+
+Run as the login item, the helper also keeps **GammonView Helper** in
+Applications (in `~/Applications` if it cannot write to `/Applications`).
+Opening it starts the helper again after a Quit, or says it is already running.
+It is written on the Mac itself rather than downloaded, so it opens with no
+Gatekeeper warning, and the installer's Remove deletes it.
+
 ### Keeping it running (macOS)
 
 `run` stops when you close the terminal. To have it start at login and stay up:

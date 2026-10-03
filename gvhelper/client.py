@@ -48,7 +48,7 @@ from .config import Config
 #:
 #: Bump it when a route, a field or a status code changes meaning -- not when
 #: this package is released, which is what the version above is for.
-RELAY_CONTRACT = "2"
+RELAY_CONTRACT = "3"
 
 #: What this client sends as its `User-Agent`: the package version and the
 #: contract it speaks. The relay's `version` field is deliberately *not* this
@@ -372,6 +372,28 @@ class WorkerClient:
             )
         except Unauthorized:
             pass
+
+    def offline(self) -> None:
+        """Tell the site this machine is not taking work for now.
+
+        Sent on Pause and on Quit from the menu-bar item. Without it the only
+        way a helper stops being offered work is silence, which the relay takes
+        two minutes to believe -- two minutes of the site saying Connected and
+        queueing matches for a machine that has stopped asking. The next poll
+        undoes it, so there is no "online" counterpart.
+
+        A relay older than revision 3 answers 404. That is not an error worth
+        reporting: the helper goes quiet instead, which is what it did before
+        this route existed.
+        """
+        try:
+            _check(
+                _send(self._client, "POST", f"{self._base}/offline"),
+                "Could not tell the site this computer is pausing.",
+            )
+        except RelayError as e:
+            if e.status != 404:
+                raise
 
     def close(self) -> None:
         self._client.close()
