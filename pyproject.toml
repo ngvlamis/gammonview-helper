@@ -73,6 +73,13 @@ build-backend = "hatchling.build"
 # guarding, because it is silent rather than loud.
 source = "vcs"
 
+[tool.hatch.version.raw-options]
+# Only this package's own tags. Without the match, `git describe` takes the
+# newest tag of either namespace -- and `v0.3.0` and `launcher-v1.0.3` sit on
+# the same commit, so building that release again would have stamped the
+# package 1.0.3, the installer's number. It published correctly only because
+# the launcher tag came later.
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["gvhelper"]
