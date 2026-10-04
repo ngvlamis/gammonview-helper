@@ -188,6 +188,7 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
             # No callback, so drawn as text rather than as something to click.
             self.status = rumps.MenuItem("Starting…")
             self.account = rumps.MenuItem("")
+            self.og = rumps.MenuItem("")
             self.toggle = rumps.MenuItem("Pause", callback=self.on_toggle)
             self.open_site = rumps.MenuItem("Open GammonView", callback=self.on_open)
             self.link = rumps.MenuItem("Link This Computer…", callback=self.on_link)
@@ -195,7 +196,7 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
             self.about = rumps.MenuItem("About GammonView Helper", callback=self.on_about)
             self.quit = rumps.MenuItem("Quit GammonView Helper", callback=self.on_quit)
             self.menu = [
-                self.status, self.account, None,
+                self.status, self.account, self.og, None,
                 self.toggle, self.open_site, self.link, None,
                 self.update, self.about, self.quit,
             ]
@@ -228,6 +229,9 @@ def run(cfg: Config, control: Control, loop: Callable[[], int]) -> int:
             line = account_line(control)
             self.account.hidden = line is None
             self.account.title = line or ""
+            og = control.og_line if control.state != "unlinked" else None
+            self.og.hidden = og is None
+            self.og.title = og or ""
             self.toggle.title = "Resume" if control.paused else "Pause"
             # One item, two jobs. Linking an already-linked machine registers it
             # twice, and the account then lists one computer as two, so Link is

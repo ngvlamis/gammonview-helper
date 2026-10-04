@@ -118,6 +118,7 @@ def analyze(
     *,
     jobs: int = 0,
     threads: int = 0,
+    suffix: str = ".gvab",
 ) -> bytes:
     """Analyse OGXM binary and return the gzipped analysed `.gvab`.
 
@@ -129,8 +130,12 @@ def analyze(
     its `.gvab` suffix. It is removed in a `finally`: a helper runs for weeks on
     somebody's laptop, and a leaked temp file per analysis is the kind of thing
     that is noticed as "this program fills my disk".
+
+    A synced OpenGammon match arrives as a JellyFish `.mat`, and is passed with
+    `suffix=".mat"` so `gvanalysis` converts it the way the browser's
+    `convertMat` would -- the two are byte-for-byte the same converter.
     """
-    fd, path = tempfile.mkstemp(suffix=".gvab")
+    fd, path = tempfile.mkstemp(suffix=suffix)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(match_bytes)

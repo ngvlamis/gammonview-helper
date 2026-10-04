@@ -29,9 +29,10 @@ import threading
 import time
 
 from . import USER_AGENT, __version__
-from .client import Job, RelayError, Unauthorized, WorkerClient
+from .client import POLL_WAIT, Job, RelayError, Unauthorized, WorkerClient
 from .config import Config, machine_name
 from .runner import Progress, analyze, available_presets, engine_version, lower_priority
+from .ogsync import LocalWork, Syncer
 from .store import load_token
 
 #: How often progress is posted while a job runs.
@@ -92,6 +93,8 @@ class Control:
         #: The email of the account this machine is linked to, once `hello`
         #: has said; None before that, when unlinked, and on an older site.
         self.account: str | None = None
+        #: The OpenGammon sync's line for the menu, or None when sync is off.
+        self.og_line: str | None = None
 
     @property
     def paused(self) -> bool:
@@ -230,6 +233,73 @@ def run_job(client: WorkerClient, job: Job, cfg: Config, control: Control | None
     _log(f"delivered {job.id} ({total or done} decisions, {len(payload)} bytes)")
 
 
+def run_synced(item: dict, cfg: Config, control: Control | None = None) -> None:
+    """Analyse one synced OpenGammon `.mat` for the sync thread waiting on it.
+
+    `run_job`'s shape without the relay: nobody is watching a progress bar for
+    this, so nothing is posted, but the menu shows it like any other match and
+    Quit abandons it the same way. The sync thread posts the result.
+    """
+    progress = Progress()
+    result: dict = {}
+
+    def work() -> None:
+        try:
+            result["bytes"] = analyze(
+                item["mat"].encode("utf-8"), item.get("preset") or "", progress,
+                jobs=cfg.jobs, threads=cfg.threads, suffix=".mat",
+            )
+        except BaseException as e:  # noqa: BLE001 - handed to the sync thread
+            result["error"] = e
+
+    _log(f"analyzing OpenGammon match {item['label']} ({item.get('preset') or 'default preset'})")
+    thread = threading.Thread(target=work, name=f"og-{item['label']}", daemon=True)
+    if control is not None:
+        control.progress = progress
+    thread.start()
+    while thread.is_alive():
+        thread.join(PROGRESS_INTERVAL)
+        if control is not None and control.stopping:
+            return  # the sync thread is released by `LocalWork.close`
+    if "error" in result:
+        error = result["error"]
+        item_error = error if isinstance(error, Exception) else RuntimeError(str(error))
+        _finish(item, error=item_error)
+    else:
+        _finish(item, result=result.get("bytes"))
+
+
+def _finish(item: dict, **kw) -> None:
+    item["_work"].finish(item, **kw)
+
+
+def start_sync(cfg: Config, token: str, name: str, control: Control | None) -> tuple[Syncer, threading.Thread]:
+    """The OpenGammon sync, on a thread of its own with a client of its own.
+
+    Its own `WorkerClient` so the sync's requests never queue behind the work
+    loop's held poll. It reads its setting from `hello`; while the player has
+    sync off, all it does is ask again every few minutes.
+    """
+    sync_client = WorkerClient(cfg, token)
+    syncer = Syncer(
+        sync_client,
+        lambda: sync_client.register(name, __version__, engine_version(), available_presets()),
+        presets=available_presets,
+        work=LocalWork(),
+        control=control,
+    )
+
+    def run() -> None:
+        try:
+            syncer.run()
+        finally:
+            sync_client.close()
+
+    thread = threading.Thread(target=run, name="opengammon-sync", daemon=True)
+    thread.start()
+    return syncer, thread
+
+
 #: How often an unlinked helper looks in the credential store.
 #:
 #: The number exists because pairing and polling are two processes. `link`
@@ -323,6 +393,11 @@ def serve(
     _log(f"{USER_AGENT} linked as {name!r} -> {cfg.api_base}")
     _log(f"presets: {', '.join(available_presets()) or '(engine not installed)'}")
 
+    # Not under `once`, which is one poll-and-work cycle for the tests and has
+    # nothing for a background thread to do.
+    syncer = None if once else start_sync(cfg, token, name, control)[0]
+    work = syncer.work if syncer is not None else None
+
     delay = RETRY_MIN
     signed_off = False
     try:
@@ -346,8 +421,23 @@ def serve(
                     signed_off = False
                 control.state = "idle"
             try:
-                job = client.next_job()
+                # A synced match waiting to be analysed asks without holding the
+                # poll open: the site's own jobs still go first, but an empty
+                # queue should not cost the sync twenty seconds a match.
+                waiting = work is not None and work.pending()
+                job = client.next_job(wait=0 if waiting else POLL_WAIT)
                 delay = RETRY_MIN
+                if job is None and work is not None:
+                    item = work.take()
+                    if item is not None:
+                        item["_work"] = work
+                        if control is not None:
+                            control.state = "busy"
+                        try:
+                            run_synced(item, cfg, control)
+                        finally:
+                            if control is not None:
+                                control.progress = None
                 if job is not None:
                     if control is not None:
                         control.state = "busy"
@@ -384,6 +474,8 @@ def serve(
         _log("stopped")
         return 0
     finally:
+        if work is not None:
+            work.close()
         client.close()
 
 

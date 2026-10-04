@@ -181,6 +181,14 @@ def _check(response: httpx.Response, fallback: str) -> httpx.Response:
     return response
 
 
+class SyncChanged(RelayError):
+    """The player changed or turned off OpenGammon sync since the last hello.
+
+    Not a fault: the answer is to say hello again and carry on with whatever
+    the setting now is.
+    """
+
+
 @dataclass
 class Job:
     """One unit of work, as handed over by `next-job`."""
@@ -267,6 +275,18 @@ class WorkerClient:
         The answer is the account's email, for the menu to show -- pairing
         never says which account approved it. None from a site older than that.
         """
+        body = self.register(name, version, engine, presets)
+        account = body.get("account")
+        return account if isinstance(account, str) and account else None
+
+    def register(self, name: str, version: str, engine: str, presets: list[str]) -> dict:
+        """`hello`, returning the whole answer rather than just the account.
+
+        The OpenGammon sync reads its setting from the same answer (`og_sync`),
+        so a player who turns sync on is heard on the helper's next hello, with
+        no route of its own to poll. An empty dict from a site that sent
+        nothing readable.
+        """
         response = _check(
             _send(self._client, "POST",
                 f"{self._base}/hello",
@@ -277,9 +297,56 @@ class WorkerClient:
         try:
             body = response.json()
         except ValueError:
-            return None
-        account = body.get("account") if isinstance(body, dict) else None
-        return account if isinstance(account, str) and account else None
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    # --- OpenGammon sync (docs/OpenGammonSync.md in the GammonView repo) ------
+
+    def _og(self, route: str, body: dict, fallback: str) -> dict:
+        r = _send(self._client, "POST", f"{self._base}/{route}", json=body,
+                  timeout=120.0 if route == "og-inbox" else REQUEST_TIMEOUT)
+        if r.status_code == 409:
+            raise SyncChanged(_message(r, "The sync setting changed."), 409)
+        _check(r, fallback)
+        try:
+            out = r.json()
+        except ValueError:
+            return {}
+        return out if isinstance(out, dict) else {}
+
+    def og_unseen(self, sync_id: str, ids: list[str]) -> list[str]:
+        """Which of these OpenGammon match ids have not been taken or skipped."""
+        if not ids:
+            return []
+        out = self._og("og-seen", {"sync_id": sync_id, "ids": ids},
+                       "Could not check which matches are new.")
+        unseen = out.get("unseen")
+        return [i for i in unseen if isinstance(i, str)] if isinstance(unseen, list) else []
+
+    def og_take(self, sync_id: str, match_id: str, create_time: int, mat: str,
+                *, analysis: str | None = None, gvab: bytes | None = None) -> int:
+        """Put one fetched match in the account's inbox. Returns the inbox depth."""
+        body = {"sync_id": sync_id, "og_match_id": match_id, "create_time": create_time,
+                "mat": mat}
+        if analysis is not None:
+            body["analysis"] = analysis
+        if gvab is not None:
+            body["gvab"] = base64.b64encode(gvab).decode("ascii")
+        out = self._og("og-inbox", body, "Could not hand the match to GammonView.")
+        depth = out.get("inbox_depth")
+        return depth if isinstance(depth, int) else 0
+
+    def og_skip(self, sync_id: str, match_id: str, create_time: int) -> None:
+        """Record a match OpenGammon never analysed, so it is not asked about again."""
+        self._og("og-skip", {"sync_id": sync_id, "og_match_id": match_id,
+                             "create_time": create_time}, "Could not record a skipped match.")
+
+    def og_cursor(self, sync_id: str, **moves) -> dict | None:
+        """Move either cursor; returns the sync setting as it now stands."""
+        out = self._og("og-cursor", {"sync_id": sync_id, **moves},
+                       "Could not record how far the sync has got.")
+        state = out.get("og_sync")
+        return state if isinstance(state, dict) else None
 
     def next_job(self, wait: int = POLL_WAIT) -> Job | None:
         """Hold a poll open until there is work, or `wait` elapses.
