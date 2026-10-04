@@ -97,6 +97,23 @@ RETRY_MIN = 30.0
 RETRY_MAX = 30 * 60.0
 
 
+def window_wait(start: int | None, end: int | None, at: float) -> float:
+    """Seconds from `at` until local analysis may run: 0 inside the window, or
+    with no window.
+
+    `start` and `end` are minutes after midnight on this computer's clock, which
+    is the point: "overnight" means the player's night wherever the computer
+    is. A window may cross midnight (22:00 to 07:00).
+    """
+    if start is None or end is None:
+        return 0.0
+    t = time.localtime(at)
+    now = t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
+    begin, stop = start * 60, end * 60
+    inside = begin <= now < stop if begin < stop else (now >= begin or now < stop)
+    return 0.0 if inside else float((begin - now) % DAY)
+
+
 def _log(message: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] opengammon: {message}", flush=True)
 
@@ -419,6 +436,19 @@ class Syncer:
     def _local(self) -> bool:
         return bool(self.state) and self.state.get("analysis") == "local"
 
+    def window_wait(self) -> float:
+        """Seconds until this computer may analyse for sync; 0 when it may now.
+
+        Only local analysis has a window: fetching OpenGammon's own analysis
+        costs this computer nothing. Outside it nothing is fetched either -- a
+        match taken now would only sit waiting for the engine.
+        """
+        if not self._local():
+            return 0.0
+        assert self.state is not None
+        return window_wait(self.state.get("window_start"), self.state.get("window_end"),
+                           self.now())
+
     def preset(self) -> str | None:
         """The player's sync preset, if this computer's engine has it.
 
@@ -447,6 +477,9 @@ class Syncer:
             line = f"OpenGammon: {synced} match{'es' if synced != 1 else ''} synced today"
             if self.state.get("backfill_before") is not None and self.history_left:
                 line += f", {self.history_left} older to go"
+            if self.window_wait():
+                start = self.state["window_start"]
+                line += f"; analysing from {start // 60:02d}:{start % 60:02d}"
         self.control.og_line = line
 
     # -- taking one match --
@@ -522,6 +555,8 @@ class Syncer:
         match that has not been taken.
         """
         assert self.state is not None
+        if self.window_wait():
+            return
         now = int(self.now())
         start = int(self.state["settled_before"])
         end = now
@@ -561,7 +596,7 @@ class Syncer:
         allowance is spent."""
         assert self.state is not None
         before = self.state.get("backfill_before")
-        if before is None:
+        if before is None or self.window_wait():
             return False
         if int(self.state.get("inbox_depth") or 0) > INBOX_PAUSE:
             return False
@@ -634,6 +669,13 @@ class Syncer:
                         next_hello = time.monotonic() + HELLO_INTERVAL
                     if self.state is None:
                         self._sleep(HELLO_INTERVAL)
+                        continue
+                    outside = self.window_wait()
+                    if outside:
+                        # Look for new matches the moment the window opens,
+                        # rather than up to a check interval later.
+                        next_check = 0.0
+                        self._sleep(max(1.0, min(outside, next_hello - time.monotonic())))
                         continue
                     if time.monotonic() >= next_check:
                         self.check()

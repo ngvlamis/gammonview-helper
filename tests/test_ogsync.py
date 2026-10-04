@@ -17,13 +17,14 @@ What these hold the sync to:
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
 import respx
 
 from gvhelper import ogsync
-from gvhelper.ogsync import Allowance, LocalWork, OpenGammon, Syncer
+from gvhelper.ogsync import Allowance, LocalWork, OpenGammon, Syncer, window_wait
 
 NOW = 1_800_000_000
 DAY = ogsync.DAY
@@ -357,3 +358,47 @@ def test_an_unfinished_analysis_reads_as_not_ready(allowance):
         return_value=httpx.Response(200, json={"analysis": {"status": "created"}}))
     assert OpenGammon(allowance, sleep=lambda s: None).analysis("q") is None
     assert allowance.analyses_left() == ogsync.DAILY_ANALYSES - 1
+
+
+# --- the analysis window -----------------------------------------------------------
+
+
+def _at(hour, minute=0):
+    """An instant at this local time of day, whatever zone the tests run in."""
+    return time.mktime((2026, 10, 4, hour, minute, 0, 0, 0, -1))
+
+
+def test_the_window_is_read_on_this_computers_clock():
+    assert window_wait(None, None, _at(12)) == 0
+    assert window_wait(9 * 60, 17 * 60, _at(12)) == 0
+    assert window_wait(9 * 60, 17 * 60, _at(8)) == 3600
+    assert window_wait(9 * 60, 17 * 60, _at(17)) == 16 * 3600
+
+
+def test_a_window_may_cross_midnight():
+    night = (22 * 60, 7 * 60)
+    assert window_wait(*night, _at(23)) == 0
+    assert window_wait(*night, _at(3)) == 0
+    assert window_wait(*night, _at(7)) == 15 * 3600
+    assert window_wait(*night, _at(21, 30)) == 1800
+
+
+def test_outside_the_window_local_sync_fetches_nothing(allowance):
+    hour = time.localtime(NOW).tm_hour
+    account = FakeAccount(analysis="local", floor=0, before=NOW)
+    account.state.update(window_start=(hour + 2) % 24 * 60, window_end=(hour + 4) % 24 * 60)
+    og = FakeOg([m("old", NOW - 400 * DAY), m("new", NOW - 3600)], allowance)
+    s = syncer(account, og, allowance, work=LocalWork())
+    assert s.window_wait() > 0
+    assert s.history_step() is False
+    s.check()
+    assert og.lists == []
+    assert account.taken() == {}
+
+
+def test_a_window_never_holds_back_opengammons_analysis(allowance):
+    hour = time.localtime(NOW).tm_hour
+    account = FakeAccount(floor=0, before=NOW)
+    account.state.update(window_start=(hour + 2) % 24 * 60, window_end=(hour + 4) % 24 * 60)
+    s = syncer(account, FakeOg([m("new", NOW - 2 * DAY)], allowance), allowance)
+    assert s.window_wait() == 0
