@@ -402,3 +402,38 @@ def test_a_window_never_holds_back_opengammons_analysis(allowance):
     account.state.update(window_start=(hour + 2) % 24 * 60, window_end=(hour + 4) % 24 * 60)
     s = syncer(account, FakeOg([m("new", NOW - 2 * DAY)], allowance), allowance)
     assert s.window_wait() == 0
+
+
+# --- check now ------------------------------------------------------------------------
+
+
+def test_a_press_cuts_the_wait_short(allowance):
+    account = FakeAccount()
+    presses = iter([False, True])
+    account.og_wait = lambda wait: next(presses)
+    s = syncer(account, FakeOg([], allowance), allowance)
+    s._idle(3600)
+    assert s.check_asked
+
+
+def test_a_site_without_the_route_is_slept_on(allowance):
+    account = FakeAccount()
+    account.og_wait = lambda wait: None
+    s = syncer(account, FakeOg([], allowance), allowance)
+    slept = []
+    s._sleep = slept.append
+    s._idle(60)
+    assert slept and not s.check_asked
+
+
+def test_an_asked_check_runs_outside_the_window(allowance):
+    hour = time.localtime(NOW).tm_hour
+    account = FakeAccount(analysis="opengammon", before=None)
+    account.state.update(analysis="local", window_start=(hour + 2) % 24 * 60,
+                         window_end=(hour + 4) % 24 * 60)
+    og = FakeOg([], allowance)
+    s = syncer(account, og, allowance, work=LocalWork())
+    s.check()
+    assert og.lists == []
+    s.check(asked=True)
+    assert og.lists

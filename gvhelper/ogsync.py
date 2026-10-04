@@ -56,6 +56,9 @@ DAY = 24 * 60 * 60
 #: "nothing new": 48 a day.
 CHECK_INTERVAL = 30 * 60
 
+#: The longest one `og-wait` is held: the site's own cap, under nginx's 30 s.
+WAIT_SECONDS = 25
+
 #: How often the setting is re-read from the site, through `hello`. Shorter
 #: than a check so that a player who has just turned sync on sees it start
 #: within minutes, and it costs a request to our own server, not OpenGammon's.
@@ -418,6 +421,8 @@ class Syncer:
         self.state: dict | None = None
         #: How many matches history has still to look at, from the last page.
         self.history_left: int | None = None
+        #: The player pressed "Check now", and the check has not run yet.
+        self.check_asked = False
 
     # -- the setting --
 
@@ -547,7 +552,7 @@ class Syncer:
 
     # -- new matches --
 
-    def check(self) -> None:
+    def check(self, *, asked: bool = False) -> None:
         """Take every new match since `settled_before`, then move it up.
 
         It moves to the start of the oldest match still waiting for its
@@ -555,7 +560,9 @@ class Syncer:
         match that has not been taken.
         """
         assert self.state is not None
-        if self.window_wait():
+        # A check the player asked for runs outside the window too: pressing
+        # the button is saying the computer may work now.
+        if self.window_wait() and not asked:
             return
         now = int(self.now())
         start = int(self.state["settled_before"])
@@ -643,6 +650,25 @@ class Syncer:
         else:  # pragma: no cover - the tests drive rounds directly
             time.sleep(seconds)
 
+    def _idle(self, seconds: float) -> None:
+        """Wait `seconds`, or less if the player presses "Check now".
+
+        Spent holding `og-wait` open rather than asleep, which is what lets the
+        button answer in seconds. A site without the route is slept on.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stopping():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            asked = self.client.og_wait(int(min(left, WAIT_SECONDS)) or 1)
+            if asked is None:
+                self._sleep(left)
+                return
+            if asked:
+                self.check_asked = True
+                return
+
     def _stopping(self) -> bool:
         return self.control is not None and self.control.stopping
 
@@ -670,12 +696,22 @@ class Syncer:
                     if self.state is None:
                         self._sleep(HELLO_INTERVAL)
                         continue
+                    if self.check_asked:
+                        _log("checking now, as asked")
+                        self.refresh()
+                        if self.state is not None:
+                            self.check(asked=True)
+                            self._moved(self.client.og_cursor(self._sync_id(), checked=True))
+                        self.check_asked = False
+                        next_check = time.monotonic() + CHECK_INTERVAL
+                        next_hello = time.monotonic() + HELLO_INTERVAL
+                        continue
                     outside = self.window_wait()
                     if outside:
                         # Look for new matches the moment the window opens,
                         # rather than up to a check interval later.
                         next_check = 0.0
-                        self._sleep(max(1.0, min(outside, next_hello - time.monotonic())))
+                        self._idle(max(1.0, min(outside, next_hello - time.monotonic())))
                         continue
                     if time.monotonic() >= next_check:
                         self.check()
@@ -684,9 +720,9 @@ class Syncer:
                         continue
                     if self.history_step():
                         delay = RETRY_MIN
-                        self._sleep(HISTORY_GAP)
+                        self._idle(HISTORY_GAP)
                         continue
-                    self._sleep(max(1.0, min(next_check, next_hello) - time.monotonic()))
+                    self._idle(max(1.0, min(next_check, next_hello) - time.monotonic()))
                 except SyncChanged:
                     next_hello = 0.0
                 except Unauthorized:

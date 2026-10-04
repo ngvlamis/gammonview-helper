@@ -348,6 +348,26 @@ class WorkerClient:
         state = out.get("og_sync")
         return state if isinstance(state, dict) else None
 
+    def og_wait(self, wait: int) -> bool | None:
+        """Hold a request open until the player presses "Check now" (True) or
+        `wait` passes (False). None from a site without the route, where the
+        caller sleeps instead."""
+        started = time.monotonic()
+        r = _send(self._client, "GET", f"{self._base}/og-wait",
+                  params={"wait": wait}, timeout=POLL_TIMEOUT)
+        if r.status_code == 404:
+            return None
+        if r.status_code in POLL_GATEWAY_STATUSES:
+            slept = time.monotonic() - started
+            if slept < POLL_GATEWAY_FLOOR:
+                time.sleep(POLL_GATEWAY_FLOOR - slept)
+            return False
+        _check(r, "Could not wait for a check.")
+        try:
+            return bool(r.json().get("check"))
+        except (ValueError, AttributeError):
+            return False
+
     def next_job(self, wait: int = POLL_WAIT) -> Job | None:
         """Hold a poll open until there is work, or `wait` elapses.
 
