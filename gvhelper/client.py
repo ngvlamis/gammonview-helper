@@ -368,6 +368,28 @@ class WorkerClient:
         except (ValueError, AttributeError):
             return False
 
+    def og_progress(self, sync_id: str, stage: str, *, match: int | None = None,
+                    matches: int | None = None, percent: int | None = None) -> bool | None:
+        """Say what the sync is doing; True when that heard a "Check now" press.
+
+        None from a site without the route. A 409 is the setting having
+        changed, which the next round finds out for itself, so it is False here.
+        """
+        body = {"sync_id": sync_id, "stage": stage}
+        body |= {k: v for k, v in (("match", match), ("matches", matches),
+                                   ("percent", percent)) if v is not None}
+        r = _send(self._client, "POST", f"{self._base}/og-progress", json=body,
+                  timeout=REQUEST_TIMEOUT)
+        if r.status_code == 404:
+            return None
+        if r.status_code == 409:
+            return False
+        _check(r, "Could not say how the sync is getting on.")
+        try:
+            return bool(r.json().get("check"))
+        except (ValueError, AttributeError):
+            return False
+
     def next_job(self, wait: int = POLL_WAIT) -> Job | None:
         """Hold a poll open until there is work, or `wait` elapses.
 

@@ -236,11 +236,14 @@ def run_job(client: WorkerClient, job: Job, cfg: Config, control: Control | None
 def run_synced(item: dict, cfg: Config, control: Control | None = None) -> None:
     """Analyse one synced OpenGammon `.mat` for the sync thread waiting on it.
 
-    `run_job`'s shape without the relay: nobody is watching a progress bar for
-    this, so nothing is posted, but the menu shows it like any other match and
-    Quit abandons it the same way. The sync thread posts the result.
+    `run_job`'s shape without the relay: there is no job to post progress to,
+    so the counts go on the item instead, and the sync thread -- which may have
+    a player watching the "Check OpenGammon" button -- says how far it has got.
+    The menu shows it like any other match and Quit abandons it the same way.
+    The sync thread posts the result.
     """
     progress = Progress()
+    item["progress"] = progress  # read by the sync thread, for the button
     result: dict = {}
 
     def work() -> None:

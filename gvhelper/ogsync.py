@@ -95,6 +95,12 @@ LOCAL_PAGE = 10
 #: Pause between two history pages, so history never runs flat out.
 HISTORY_GAP = 5.0
 
+#: How often the sync says how far a match has got (`og-progress`): often while
+#: a player is watching the button, and otherwise just often enough that a
+#: press made mid-match is heard well inside the page's 45 seconds.
+TELL_WATCHED = 3.0
+TELL_UNWATCHED = 10.0
+
 #: Backoff after a failed round, as the work loop does it.
 RETRY_MIN = 30.0
 RETRY_MAX = 30 * 60.0
@@ -332,6 +338,17 @@ def _oldest(raw: list[dict]) -> int | None:
 # --- handing local analysis to the work loop -------------------------------------
 
 
+#: How often a sync waiting on the work loop looks up, to say how far it has got.
+WAIT_TICK = 1.0
+
+
+def _percent(progress) -> int | None:
+    if progress is None:
+        return None
+    done, total = progress.get()
+    return max(0, min(100, done * 100 // total)) if total > 0 else None
+
+
 class LocalWork:
     """A synced `.mat` waiting for the work loop to analyse it.
 
@@ -351,17 +368,32 @@ class LocalWork:
         with self._cond:
             return self._item is not None and "taken" not in self._item
 
-    def submit(self, mat: str, preset: str | None, label: str) -> bytes:
+    def submit(self, mat: str, preset: str | None, label: str,
+               on_wait: Callable[[int | None], None] | None = None) -> bytes:
         """Wait for the work loop to analyse `mat`. Raises on failure, or
-        `InterruptedError` if the helper is quitting."""
+        `InterruptedError` if the helper is quitting.
+
+        `on_wait` is called about once a second meanwhile with how far the
+        analysis has got, in percent (None before it has started), and never
+        with the lock held: it makes a request.
+        """
         item = {"mat": mat, "preset": preset, "label": label}
+
+        def over() -> bool:
+            return "result" in item or "error" in item or self._closed
+
         with self._cond:
             if self._closed:
                 raise InterruptedError("the helper is quitting")
             self._item = item
             self._cond.notify_all()
-            self._cond.wait_for(lambda: "result" in item or "error" in item or self._closed)
-            self._item = None
+        while True:
+            with self._cond:
+                if self._cond.wait_for(over, timeout=WAIT_TICK):
+                    self._item = None
+                    break
+            if on_wait is not None:
+                on_wait(_percent(item.get("progress")))
         if "result" in item:
             return item["result"]
         if "error" in item:
@@ -423,6 +455,11 @@ class Syncer:
         self.history_left: int | None = None
         #: The player pressed "Check now", and the check has not run yet.
         self.check_asked = False
+        #: Match n of N of a check the player asked for, while it runs.
+        self.telling: tuple[int, int] | None = None
+        #: False once the site turns out not to have `og-progress`.
+        self._can_tell = True
+        self._told = 0.0
 
     # -- the setting --
 
@@ -471,6 +508,37 @@ class Syncer:
     def _moved(self, state: dict | None) -> None:
         if state is not None:
             self.state = state
+
+    # -- telling the button --
+
+    def _tell(self, stage: str, *, percent: int | None = None) -> None:
+        """Say what the sync is doing (`og-progress`), and hear a press doing so.
+
+        Never fails the sync: a lost progress line costs the page one update.
+        """
+        if not self._can_tell or self.state is None:
+            return
+        self._told = time.monotonic()
+        match, matches = self.telling or (None, None)
+        try:
+            heard = self.client.og_progress(self._sync_id(), stage, match=match,
+                                            matches=matches, percent=percent)
+        except Exception:  # noqa: BLE001 - see above
+            return
+        if heard is None:
+            self._can_tell = False
+        elif heard:
+            self.check_asked = True
+
+    def _analysing(self, percent: int | None) -> None:
+        """`LocalWork.submit`'s `on_wait`: how far this match has got."""
+        watched = self.telling is not None or self.check_asked
+        if time.monotonic() - self._told < (TELL_WATCHED if watched else TELL_UNWATCHED):
+            return
+        if self.telling is not None:
+            self._tell("analysing", percent=percent)
+        else:
+            self._tell("finishing" if self.check_asked else "busy", percent=percent)
 
     def _report(self) -> None:
         """The menu's line about sync, or None when there is nothing to say."""
@@ -528,7 +596,7 @@ class Syncer:
                 self.client.og_skip(sync_id, entry.id, entry.create_time)
                 return "skipped"
             try:
-                gvab = self.work.submit(mat, self.preset(), entry.id)
+                gvab = self.work.submit(mat, self.preset(), entry.id, on_wait=self._analysing)
             except InterruptedError:
                 raise
             except Exception as e:  # noqa: BLE001 - one bad match must not stop the sync
@@ -564,6 +632,8 @@ class Syncer:
         # the button is saying the computer may work now.
         if self.window_wait() and not asked:
             return
+        if asked:
+            self._tell("looking")
         now = int(self.now())
         start = int(self.state["settled_before"])
         end = now
@@ -580,6 +650,15 @@ class Syncer:
         waiting: list[int] = []
         new = sorted(self._unseen(list(found.values())), key=lambda e: e.create_time)
         for n, e in enumerate(new):
+            if self.check_asked and not asked:
+                # A press heard mid-check: the asked check, next, takes the rest
+                # and says so as it goes.
+                waiting += [x.create_time for x in new[n:]]
+                break
+            if asked:
+                self.telling = (n + 1, len(new))
+                self._tell("analysing" if self._local() else "fetching",
+                           percent=0 if self._local() else None)
             try:
                 outcome = self._take(e, history=False)
             except (Exhausted, OgRateLimited):
@@ -588,6 +667,8 @@ class Syncer:
             except OgError as err:
                 _log(f"could not fetch {e.id}: {err}")
                 outcome = "later"
+            finally:
+                self.telling = None
             if outcome == "later":
                 waiting.append(e.create_time)
 
@@ -616,8 +697,13 @@ class Syncer:
         self._report()
 
         for e in self._unseen(entries(raw)):
+            if self.check_asked:
+                # Heard mid-page: the check goes first. The cursor stays put,
+                # so this page is listed again and `og_seen` skips what is done.
+                return True
             try:
                 self._take(e, history=True)
+                self._analysing(None)  # a page fetched from OpenGammon is long too
             except Exhausted:
                 return False
             except OgRateLimited:
@@ -657,7 +743,7 @@ class Syncer:
         button answer in seconds. A site without the route is slept on.
         """
         deadline = time.monotonic() + seconds
-        while not self._stopping():
+        while not self._stopping() and not self.check_asked:
             left = deadline - time.monotonic()
             if left <= 0:
                 return

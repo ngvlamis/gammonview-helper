@@ -101,6 +101,16 @@ class FakeAccount:
     def og_skip(self, sync_id, match_id, create_time):
         self.seen.setdefault(match_id, "no-analysis")
 
+    told: list
+    press_on: str | None = None
+
+    def og_progress(self, sync_id, stage, *, match=None, matches=None, percent=None):
+        self.__dict__.setdefault("told", []).append((stage, match, matches, percent))
+        if stage == self.press_on:
+            self.press_on = None
+            return True
+        return False
+
     def og_cursor(self, sync_id, settled_before=None, backfill_before=None,
                   history_done=False, backfill_floor=None):
         s = self.state
@@ -437,3 +447,84 @@ def test_an_asked_check_runs_outside_the_window(allowance):
     assert og.lists == []
     s.check(asked=True)
     assert og.lists
+
+
+# --- telling the button how far it has got ------------------------------------------------
+
+
+def _work_loop(work, n, percent_done=(5, 10)):
+    """The work loop for `n` matches, each reporting `percent_done` for a moment."""
+    import threading
+
+    from gvhelper.runner import Progress
+
+    def loop():
+        for _ in range(n):
+            while (item := work.take()) is None:
+                time.sleep(0.01)
+            progress = Progress()
+            progress.set(*percent_done)
+            item["progress"] = progress
+            time.sleep(1.3)
+            work.finish(item, result=b"gvab")
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
+
+
+def test_an_asked_check_says_which_match_and_how_far(allowance, monkeypatch):
+    monkeypatch.setattr(ogsync, "TELL_WATCHED", 0.0)
+    work = LocalWork()
+    account = FakeAccount(analysis="local", before=None)
+    og = FakeOg([m("a", NOW - 3600), m("b", NOW - 600)], allowance)
+    s = syncer(account, og, allowance, work=work)
+    t = _work_loop(work, 2)
+    s.check(asked=True)
+    t.join(5)
+    told = account.told
+    assert told[0] == ("looking", None, None, None)
+    assert ("analysing", 1, 2, 0) in told and ("analysing", 2, 2, 0) in told
+    assert ("analysing", 1, 2, 50) in told and ("analysing", 2, 2, 50) in told
+    assert s.telling is None
+
+
+def test_a_press_heard_mid_history_goes_first(allowance, monkeypatch):
+    monkeypatch.setattr(ogsync, "TELL_UNWATCHED", 0.0)
+    monkeypatch.setattr(ogsync, "TELL_WATCHED", 0.0)
+    work = LocalWork()
+    account = FakeAccount(analysis="local", floor=0, before=NOW)
+    account.press_on = "busy"
+    og = FakeOg([m("old1", NOW - 400 * DAY), m("old2", NOW - 401 * DAY)], allowance)
+    s = syncer(account, og, allowance, work=work)
+    t = _work_loop(work, 1)
+    assert s.history_step() is True
+    t.join(5)
+    # The match in hand is finished, said as such once the press is heard;
+    # the rest of the page waits for the check, and the cursor has not moved.
+    assert s.check_asked
+    assert len(account.taken()) == 1
+    assert any(stage == "finishing" for stage, *_ in account.told)
+    assert account.state["backfill_before"] == NOW
+
+
+def test_a_site_without_progress_is_not_asked_again(allowance):
+    account = FakeAccount()
+    calls = []
+    account.og_progress = lambda *a, **k: calls.append(a) and None
+    s = syncer(account, FakeOg([], allowance), allowance)
+    s._tell("looking")
+    s._tell("looking")
+    assert len(calls) == 1
+
+
+def test_a_progress_line_that_fails_never_fails_the_sync(allowance):
+    account = FakeAccount()
+
+    def boom(*a, **k):
+        raise ogsync.RelayError("down")
+
+    account.og_progress = boom
+    s = syncer(account, FakeOg([m("a", NOW - 600)], allowance), allowance)
+    s.check(asked=True)
+    assert "a" in account.inbox
