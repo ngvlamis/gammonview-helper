@@ -215,11 +215,11 @@ wheels = [
 
 [[package]]
 name = "gammonview"
-version = "1.1.0"
+version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7b/ac/f3c561baa135b64bc381b971d27473f0783c4c0010337ebf89502b1891e5/gammonview-1.1.0.tar.gz", hash = "sha256:34bf418e02b6a1e387f46639fe32fa3019d58b596ee37faf79d8c3d90ec6233b", size = 3039761, upload-time = "2026-09-21T03:08:11.244Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/d3/547a569c99b81848d9acefecafc2017d01dc918e857ba869b885da9246c0/gammonview-1.5.1.tar.gz", hash = "sha256:131c238d1e610baff8df125c477dbf12f7851ce129c0c00205d74d196a14b315", size = 3429457, upload-time = "2026-10-05T23:37:07.253Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/c7/4dbe1a7e1846f2029036549fed64f364264ffdccfeda91790241f132b6f3/gammonview-1.1.0-py3-none-any.whl", hash = "sha256:9573c6deaa89ab05937ddeda2ff5b958f20a292c6f89a7a9955b134d1a617242", size = 220725, upload-time = "2026-09-21T03:08:09.714Z" },
+    { url = "https://files.pythonhosted.org/packages/50/f0/e147a41e64befe0f57f15c94f37e6131489ec6806fcc70678a38930d5e27/gammonview-1.5.1-py3-none-any.whl", hash = "sha256:b7d55d919cd754052efde33b9838eba1d8c6e3201ac9482589152bfbb72862fd", size = 239569, upload-time = "2026-10-05T23:37:04.771Z" },
 ]
 
 [package.optional-dependencies]
@@ -246,7 +246,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gammonview", extras = ["engine"], specifier = ">=1.0.0" },
+    { name = "gammonview", extras = ["engine"], specifier = ">=1.5.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "keyring", specifier = ">=25.0" },
     { name = "rumps", marker = "sys_platform == 'darwin'", specifier = ">=0.4" },

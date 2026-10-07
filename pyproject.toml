@@ -46,8 +46,14 @@ classifiers = [
 #
 # Still absent: anything for watching folders. That is v2 (`docs/DesktopHelper.md`,
 # "v1 analyses. It does not watch folders").
+#
+# The `gammonview` floor is the oldest that analyses every match the site
+# sends. Below 1.5.1 a match whose White does not sort first alphabetically
+# -- any HedgeHog download, by HedgeHog's seats -- runs to the last decision
+# and then fails with `orientation mismatch`. An existing install keeps
+# whatever it resolved first, so the floor is what moves it.
 dependencies = [
-    "gammonview[engine]>=1.0.0",
+    "gammonview[engine]>=1.5.1",
     "httpx>=0.27",
     "keyring>=25.0",
     "rumps>=0.4; sys_platform == 'darwin'",
